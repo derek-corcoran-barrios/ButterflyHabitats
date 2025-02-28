@@ -14,23 +14,9 @@ We begin by loading the required R packages:
 ``` r
 library(readxl)
 library(dplyr)
-#> 
-#> Attaching package: 'dplyr'
-#> The following objects are masked from 'package:stats':
-#> 
-#>     filter, lag
-#> The following objects are masked from 'package:base':
-#> 
-#>     intersect, setdiff, setequal, union
 library(terra)
-#> terra 1.8.29
 library(foreign)
 library(stringdist)
-#> 
-#> Attaching package: 'stringdist'
-#> The following object is masked from 'package:terra':
-#> 
-#>     extract
 ```
 
 ## Reading the Expert Opinion Table
