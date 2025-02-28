@@ -228,3 +228,115 @@ analysis or verification.
 ``` r
 openxlsx::write.xlsx(DF, "Comparison_01.xlsx")
 ```
+
+# Test aggregated
+
+# Comparison with Lu_01 in basemap
+
+## Loading Basemap Habitat Classifications
+
+To perform the matching, we extract unique habitat classifications from
+the attribute table (`.dbf` file) of the basemap.
+
+``` r
+lu_agg <- foreign::read.dbf("Basemap/lu_agg_2021.tif.vat.dbf")
+
+C_02b <- unique(as.character(lu_agg$C_02))
+
+# Clean C_12 by removing numbers and trimming whitespace
+C_02b <- trimws(gsub("[0-9]", "", C_02b))
+```
+
+## Performing Habitat Matching
+
+We apply the string matching function to find the closest corresponding
+habitat name in the basemap classifications for each expert-identified
+habitat.
+
+``` r
+DF$c_02b <- sapply(DF$clean_unique_habs, find_closest, candidates = C_02b)
+```
+
+## Reviewing and Exporting the Results
+
+We display the final table for review:
+
+| unique_habs                                                          | clean_unique_habs                                              | c_05                               | c_09                               | c_12                                       | c_02                                  | c_05b                                      | c_20                                       | c_02b                                      |
+|:---------------------------------------------------------------------|:---------------------------------------------------------------|:-----------------------------------|:-----------------------------------|:-------------------------------------------|:--------------------------------------|:-------------------------------------------|:-------------------------------------------|:-------------------------------------------|
+| Avneknippemose (0-3)                                                 | Avneknippemose                                                 | Avneknippemose                     | Avneknippemose                     | Jernbane                                   | Avneknippemose                        | Lav bebyggelse                             | Lav bebyggelse                             | Lav bebyggelse                             |
+| Dyrkede marker (I omdrift) (0-3)                                     | Dyrkede marker (I omdrift)                                     | Frit areal (overdrev)              | Frit areal (overdrev)              | Ikke kortlagt                              | Frit areal (overdrev)                 | Vej, ikke befæstet                         | Bykerne; Bygning                           | Bykerne; Bygning                           |
+| Forstæder og villakvarterer (0-3)                                    | Forstæder og villakvarterer                                    | Frit areal (overdrev)              | Frit areal (overdrev)              | Andet bebyggelse                           | Surt overdrev                         | Natur, tør                                 | Natur, tør                                 | Andet bebyggelse                           |
+| Grøftekanter (0-3)                                                   | Grøftekanter                                                   | Golfbane                           | Golfbane                           | Natur, tør                                 | Golfbane                              | Natur, tør                                 | Natur, tør                                 | Bykerne                                    |
+| Højmose, nedbrudt højmose og hængesæk (0-3)                          | Højmose, nedbrudt højmose og hængesæk                          | Nedbrudt højmose                   | Nedbrudt højmose                   | Høj bebyggelse                             | Nedbrudt højmose                      | Høj bebyggelse                             | Høj bebyggelse; Bygning                    | Høj bebyggelse; Bygning                    |
+| Ikke dyrkede, ikke bebyggede åbne områder, inklusive ruderater (0-3) | Ikke dyrkede, ikke bebyggede åbne områder, inklusive ruderater | Strandvold med flerårig vegetation | Strandvold med flerårig vegetation | Landbrug, intensivt, midlertidige afgrøder | Vejmidte, Lokalvej-Sekundær, Befæstet | Landbrug, intensivt, midlertidige afgrøder | Landbrug, intensivt, midlertidige afgrøder | Landbrug, intensivt, midlertidige afgrøder |
+| Kildevæld (0-3)                                                      | Kildevæld                                                      | Kildevæld                          | Kildevæld                          | Skov                                       | Kildevæld                             | Hav                                        | Hav                                        | Bykerne                                    |
+| Klitlavninger (0-3)                                                  | Klitlavninger                                                  | Klitlavning                        | Klitlavning                        | Bygning                                    | Klitlavning                           | Bygning                                    | Bygning                                    | Bygning                                    |
+| Klitter (0-3)                                                        | Klitter                                                        | Klit                               | Klit                               | Erhverv                                    | Klit                                  | Erhverv                                    | Erhverv                                    | Erhverv                                    |
+| Krat (0-3)                                                           | Krat                                                           | Krat                               | Krat                               | Hav                                        | Krat                                  | Hav                                        | Hav                                        | Hav                                        |
+| Kyst-skrænter (0-3)                                                  | Kyst-skrænter                                                  | Skrænt                             | Skrænt                             | Natur, tør                                 | Skrænt                                | Natur, tør                                 | Natur, tør                                 | Bykerne                                    |
+| Landbrugsbebyggelse, nedlagte landbrug mm (0-3)                      | Landbrugsbebyggelse, nedlagte landbrug mm                      | Lav bebyggelse                     | Lav bebyggelse                     | Landbrug, intensivt, permanente afgrøder   | Lav bebyggelse                        | Landbrug, intensivt, permanente afgrøder   | Andet bebyggelse; Bygning                  | Lav bebyggelse; Bygning                    |
+| Landsbyer (0-3)                                                      | Landsbyer                                                      | Land                               | Land                               | Vandløb                                    | Land                                  | Vandløb                                    | Vandløb                                    | Vandløb                                    |
+| Levende hegn (0-3)                                                   | Levende hegn                                                   | Strandeng                          | Strandeng                          | Jernbane                                   | Overdrev                              | Jernbane                                   | Jernbane                                   | Jernbane                                   |
+| Lysåben skov (0-3)                                                   | Lysåben skov                                                   | Ege-blandskov                      | Ege-blandskov                      | Skov                                       | Ege-blandskov                         | Skov                                       | Skov                                       | Skov                                       |
+| Mark kanter og markskel (0-3)                                        | Mark kanter og markskel                                        | Ukultiveret areal                  | Ukultiveret areal                  | Lav bebyggelse                             | Rekreativt område                     | Lav bebyggelse                             | Lav bebyggelse                             | Lav bebyggelse                             |
+| Midtby (centrum af større byer) (0-3)                                | Midtby (centrum af større byer)                                | Skovbevoksede tørvemoser           | Skovbevoksede tørvemoser           | Andet bebyggelse                           | Skovbevoksede tørvemoser              | Natur, tør                                 | Natur, tør                                 | Andet bebyggelse                           |
+| Næringsfattig skov (0-3)                                             | Næringsfattig skov                                             | Vinteregeskov                      | Vinteregeskov                      | Natur, tør                                 | Vinteregeskov                         | Natur, tør                                 | Natur, tør                                 | Natur, tør                                 |
+| Næringsfattig våd eng (0-3)                                          | Næringsfattig våd eng                                          | Tidvis våd eng                     | Tidvis våd eng                     | Natur, våd                                 | Tidvis våd eng                        | Natur, våd                                 | Natur, våd                                 | Natur, våd                                 |
+| Næringsrig skov (0-3)                                                | Næringsrig skov                                                | Vinteregeskov                      | Vinteregeskov                      | Natur, tør                                 | Vinteregeskov                         | Natur, tør                                 | Natur, tør                                 | Erhverv                                    |
+| Næringsrig våd eng (0-3)                                             | Næringsrig våd eng                                             | Tidvis våd eng                     | Tidvis våd eng                     | Natur, våd                                 | Tidvis våd eng                        | Natur, våd                                 | Natur, våd                                 | Natur, våd                                 |
+| Overdrev (0-3)                                                       | Overdrev                                                       | Overdrev                           | Overdrev                           | Bykerne                                    | Overdrev                              | Erhverv                                    | Erhverv                                    | Bykerne                                    |
+| Rigkær (0-3)                                                         | Rigkær                                                         | Rigkær                             | Rigkær                             | Skov                                       | Rigkær                                | Skov                                       | Skov                                       | Skov                                       |
+| Skovbevokset tørvmose (0-3)                                          | Skovbevokset tørvmose                                          | Skovbevoksede tørvemoser           | Skovbevoksede tørvemoser           | Skov, våd                                  | Skovbevoksede tørvemoser              | Skov, våd                                  | Skov, våd                                  | Skov, våd                                  |
+| Skovkanter (0-3)                                                     | Skovkanter                                                     | Skovklit                           | Skovklit                           | Skov                                       | Skovklit                              | Skov                                       | Skov                                       | Skov                                       |
+| Skovlysninger (0-3)                                                  | Skovlysninger                                                  | Skovfyr                            | Skovfyr                            | Bygning                                    | Skovfyr                               | Bygning                                    | Bygning                                    | Bygning                                    |
+| Skovmose/Sumpskov (0-3)                                              | Skovmose/Sumpskov                                              | Strandsump                         | Strandsump                         | Skov                                       | Strandsump                            | Skov                                       | Skov                                       | Skov                                       |
+| Strandeng (0-3)                                                      | Strandeng                                                      | Strandeng                          | Strandeng                          | Jernbane                                   | Strandeng                             | Bygning                                    | Bygning                                    | Bygning                                    |
+| Strandoverdrev (0-3)                                                 | Strandoverdrev                                                 | Surt overdrev                      | Surt overdrev                      | Erhverv                                    | Surt overdrev                         | Erhverv                                    | Erhverv                                    | Erhverv                                    |
+| Tæt skov (0-3)                                                       | Tæt skov                                                       | Skov                               | Skov                               | Skov                                       | Skov                                  | Skov                                       | Skov                                       | Skov                                       |
+| Tør hede (0-3)                                                       | Tør hede                                                       | Tør hede                           | Tør hede                           | Jernbane                                   | Tør hede                              | Erhverv                                    | Erhverv                                    | Erhverv                                    |
+| Vandløbskanter (0-3)                                                 | Vandløbskanter                                                 | Vandloebskant                      | Skydebane                          | Vandløb                                    | Sand / klit                           | Vandløb                                    | Vandløb                                    | Vandløb                                    |
+| Vejkanter og vejskråninger (0-3)                                     | Vejkanter og vejskråninger                                     | Vinteregeskov                      | Vinteregeskov                      | Natur, våd                                 | Vinteregeskov                         | Vej, ikke befæstet                         | Jernbane; Bygning                          | Bykerne; Bygning                           |
+| Våd hede (0-3)                                                       | Våd hede                                                       | Våd hede                           | Våd hede                           | Jernbane                                   | Våd hede                              | Vandløb                                    | Vandløb                                    | Bykerne                                    |
+
+Finally, we export the matched data to an Excel file for further
+analysis or verification.
+
+``` r
+openxlsx::write.xlsx(DF, "Comparison_agg.xlsx")
+```
+
+## Evaluating Matching Accuracy
+
+To assess which column has the highest number of exact matches with
+clean_unique_habs, we calculate the number of direct matches for each
+column:
+
+``` r
+exact_matches_05 <- sum(DF$clean_unique_habs == DF$c_05, na.rm = TRUE)
+exact_matches_09 <- sum(DF$clean_unique_habs == DF$c_09, na.rm = TRUE)
+exact_matches_12 <- sum(DF$clean_unique_habs == DF$c_12, na.rm = TRUE)
+exact_matches_02 <- sum(DF$clean_unique_habs == DF$c_02, na.rm = TRUE)
+exact_matches_02b <- sum(DF$clean_unique_habs == DF$c_02b, na.rm = TRUE)
+exact_matches_05b <- sum(DF$clean_unique_habs == DF$c_05b, na.rm = TRUE)
+exact_matches_20 <- sum(DF$clean_unique_habs == DF$c_20, na.rm = TRUE)
+
+match_summary <- data.frame(
+  Column = c("c_02","c_02b", "c_05", "c_05b", "c_09", "c_12", "c_20"),
+  Exact_Matches = c(exact_matches_02, exact_matches_02b ,exact_matches_05, exact_matches_05b, exact_matches_09, exact_matches_12, exact_matches_20)
+)
+```
+
+## match_summary
+
+This summary table will help determine which classification scheme
+aligns most closely with the expert-provided habitat,
+
+| Column | Exact_Matches |
+|:-------|--------------:|
+| c_02   |             8 |
+| c_02b  |             0 |
+| c_05   |             8 |
+| c_05b  |             0 |
+| c_09   |             8 |
+| c_12   |             0 |
+| c_20   |             0 |

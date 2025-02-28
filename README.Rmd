@@ -160,3 +160,72 @@ Finally, we export the matched data to an Excel file for further analysis or ver
 openxlsx::write.xlsx(DF, "Comparison_01.xlsx")
 ```
 
+# Test aggregated
+
+# Comparison with Lu_01 in basemap
+
+## Loading Basemap Habitat Classifications
+
+To perform the matching, we extract unique habitat classifications from the attribute table (`.dbf` file) of the basemap.
+
+```{r mathc2}
+lu_agg <- foreign::read.dbf("Basemap/lu_agg_2021.tif.vat.dbf")
+
+C_02b <- unique(as.character(lu_agg$C_02))
+
+# Clean C_12 by removing numbers and trimming whitespace
+C_02b <- trimws(gsub("[0-9]", "", C_02b))
+```
+
+
+## Performing Habitat Matching
+
+We apply the string matching function to find the closest corresponding habitat name in the basemap classifications for each expert-identified habitat.
+
+```{r calc3}
+DF$c_02b <- sapply(DF$clean_unique_habs, find_closest, candidates = C_02b)
+```
+
+## Reviewing and Exporting the Results
+
+We display the final table for review:
+
+```{r, echo=FALSE}
+knitr::kable(DF)
+```
+
+Finally, we export the matched data to an Excel file for further analysis or verification.
+
+```{r exportdataset3}
+openxlsx::write.xlsx(DF, "Comparison_agg.xlsx")
+```
+
+## Evaluating Matching Accuracy
+
+To assess which column has the highest number of exact matches with clean_unique_habs, we calculate the number of direct matches for each column:
+
+```{r eval}
+exact_matches_05 <- sum(DF$clean_unique_habs == DF$c_05, na.rm = TRUE)
+exact_matches_09 <- sum(DF$clean_unique_habs == DF$c_09, na.rm = TRUE)
+exact_matches_12 <- sum(DF$clean_unique_habs == DF$c_12, na.rm = TRUE)
+exact_matches_02 <- sum(DF$clean_unique_habs == DF$c_02, na.rm = TRUE)
+exact_matches_02b <- sum(DF$clean_unique_habs == DF$c_02b, na.rm = TRUE)
+exact_matches_05b <- sum(DF$clean_unique_habs == DF$c_05b, na.rm = TRUE)
+exact_matches_20 <- sum(DF$clean_unique_habs == DF$c_20, na.rm = TRUE)
+
+match_summary <- data.frame(
+  Column = c("c_02","c_02b", "c_05", "c_05b", "c_09", "c_12", "c_20"),
+  Exact_Matches = c(exact_matches_02, exact_matches_02b ,exact_matches_05, exact_matches_05b, exact_matches_09, exact_matches_12, exact_matches_20)
+)
+```
+
+
+
+## match_summary
+
+This summary table will help determine which classification scheme aligns most closely with the expert-provided habitat,
+
+```{r, echo=FALSE}
+knitr::kable(match_summary)
+```
+
