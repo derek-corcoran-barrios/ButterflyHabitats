@@ -49,6 +49,8 @@ UniqueHabs_clean <- trimws(gsub("\\s*\\(0-3\\)$", "", UniqueHabs))
 
 This process results in `r length(UniqueHabs)` distinct habitat categories that need to be matched with habitat classifications from the spatial basemap.
 
+# Comparison with Lu_00 in basemap
+
 ## Loading Basemap Habitat Classifications
 
 To perform the matching, we extract unique habitat classifications from the attribute table (`.dbf` file) of the basemap.
@@ -113,5 +115,48 @@ Finally, we export the matched data to an Excel file for further analysis or ver
 
 ```{r exportdataset}
 openxlsx::write.xlsx(DF, "Comparison.xlsx")
+```
+
+# Comparison with Lu_01 in basemap
+
+## Loading Basemap Habitat Classifications
+
+To perform the matching, we extract unique habitat classifications from the attribute table (`.dbf` file) of the basemap.
+
+```{r mathc}
+lu_01 <- foreign::read.dbf("Basemap/lu_01_2021.tif.vat.dbf")
+
+C_02 <- unique(as.character(lu_01$C_02))
+C_05 <- unique(as.character(lu_01$C_05))
+C_20 <- unique(as.character(lu_01$C_20))
+
+# Clean C_12 by removing numbers and trimming whitespace
+C_05 <- trimws(gsub("[0-9]", "", C_05))
+C_20 <- trimws(gsub("[0-9]", "", C_20))
+```
+
+
+## Performing Habitat Matching
+
+We apply the string matching function to find the closest corresponding habitat name in the basemap classifications for each expert-identified habitat.
+
+```{r calc2}
+DF$c_02 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_02)
+DF$c_05b <- sapply(DF$clean_unique_habs, find_closest, candidates = C_05)
+DF$c_20 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_20)
+```
+
+## Reviewing and Exporting the Results
+
+We display the final table for review:
+
+```{r, echo=FALSE}
+knitr::kable(DF)
+```
+
+Finally, we export the matched data to an Excel file for further analysis or verification.
+
+```{r exportdataset2}
+openxlsx::write.xlsx(DF, "Comparison_01.xlsx")
 ```
 
