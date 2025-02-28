@@ -1,0 +1,114 @@
+---
+output: github_document
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Overview
+
+This repository aims to transform expert opinion data into species distribution maps by linking habitat classifications from expert assessments to existing spatial basemaps.
+
+## Loading Necessary Packages
+
+We begin by loading the required R packages:
+
+```{r loadPackages}
+library(readxl)
+library(dplyr)
+library(terra)
+library(foreign)
+library(stringdist)
+```
+
+## Reading the Expert Opinion Table
+
+We load the expert opinion data from an Excel file:
+
+```{r readinTable}
+Experts <- readxl::read_xlsx("Majority_Expert_Opinions.xlsx")
+```
+
+## Extracting and Cleaning Unique Habitat Names
+
+The first step is to extract all unique habitat names from the expert table and clean them by removing specific formatting artifacts (e.g., numerical indicators like `(0-3)`).
+
+```{r Uniquehabitats}
+UniqueHabs <- unique(Experts$Habitat)
+UniqueHabs_clean <- trimws(gsub("\\s*\\(0-3\\)$", "", UniqueHabs))
+```
+
+This process results in `r length(UniqueHabs)` distinct habitat categories that need to be matched with habitat classifications from the spatial basemap.
+
+## Loading Basemap Habitat Classifications
+
+To perform the matching, we extract unique habitat classifications from the attribute table (`.dbf` file) of the basemap.
+
+```{r}
+lu_00 <- foreign::read.dbf("Basemap/lu_00_2021.tif.vat.dbf")
+
+C_05 <- unique(as.character(lu_00$C_05))
+C_09 <- unique(as.character(lu_00$C_09))
+C_12 <- unique(as.character(lu_00$C_12))
+
+# Clean C_12 by removing numbers and trimming whitespace
+C_12 <- trimws(gsub("[0-9]", "", C_12))
+```
+
+## Creating a Dataframe for Habitat Matching
+
+We construct a dataframe to store the original and cleaned habitat names along with their corresponding matches in the basemap data.
+
+```{r dataframe}
+DF <- data.frame(
+  unique_habs = UniqueHabs,
+  clean_unique_habs = UniqueHabs_clean,
+  c_05 = NA,
+  c_09 = NA,
+  c_12 = NA
+)
+```
+
+## Defining a String Matching Function
+
+To find the best match for each habitat name, we use the Levenshtein distance, which measures the similarity between two strings. The function returns the closest matching habitat name from the provided list of candidates.
+
+```{r function}
+find_closest <- function(target, candidates) {
+  # Compute Levenshtein distances between the target and candidate habitat names
+  distances <- stringdist(target, candidates, method = "lv")
+  # Return the most similar match
+  candidates[which.min(distances)]
+}
+```
+
+## Performing Habitat Matching
+
+We apply the string matching function to find the closest corresponding habitat name in the basemap classifications for each expert-identified habitat.
+
+```{r calc}
+DF$c_05 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_05)
+DF$c_09 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_09)
+DF$c_12 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_12)
+```
+
+## Reviewing and Exporting the Results
+
+We display the final table for review:
+
+```{r, echo=FALSE}
+knitr::kable(DF)
+```
+
+Finally, we export the matched data to an Excel file for further analysis or verification.
+
+```{r exportdataset}
+openxlsx::write.xlsx(DF, "Comparison.xlsx")
+```
+
