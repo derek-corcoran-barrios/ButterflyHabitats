@@ -5,6 +5,7 @@ output:
     number_sections: true
     fig_caption: true
     toc: true
+    keep_tex: true
 ---
 
 ```{r setup, include = FALSE}
@@ -16,6 +17,340 @@ knitr::opts_chunk$set(
   message  = FALSE,
   warning  = FALSE
 )
+```
+
+# Data  overview
+
+All paths below are given relative to the `outputs/` folder used in this project.
+
+## Conditions of use
+
+Description: This folder contains derived spatial data on butterfly habitats in Denmark, produced as part of the projects
+
+- **Project 1 – Contemporary Habitat Configuration and Population Genomics**, and  
+- **Project 2 – Historical / Temporal Habitat Configuration and Population Museomics**.
+
+Date created: 07-12-2025  
+Date modified: 07-12-2025  
+Contact: Derek Corcoran; Signe Normand  
+Contact email: derek.corcoran@bio.au.dk; signe.normand@bio.au.dk  
+
+
+Please read and adhere to the conditions of use carefully before using these data.
+
+**Conditions of use**
+
+The data provided here must not be shared, published or otherwise used beyond the agreed collaboration without prior approval from Prof. Signe Normand (<signe.normand@bio.au.dk>).
+
+- Upon agreement as stated above, the data can only be shared under arestrictive **CC BY-NC-ND** license (Attribution–NonCommercial–NoDerivatives).
+
+- The data have been assembled specifically to support the above projects and should only be used accordingly and in agreement with the data providers (SustainScapes group and collaborators).
+
+
+## Folder structure of the data delivery
+
+The delivery currently consists of:
+
+- `SpeciesHabs/`  
+  Species-specific habitat suitability rasters for the butterfly species
+  included in this project (one file per species and definition).
+
+- `Species_PatchDistances/`  
+  Patch-based connectivity outputs (thresholded rasters, patch polygons, and nearest-neighbour distance statistics) derived from the species
+  habitat rasters.
+
+The **upstream input data** used to derive these layers (national land-use basemap, EcoDes layers, expert opinion tables, etc.) are *not*
+part of this delivery, but are fully documented in the workflow sections.
+
+## Description of delivered files
+### `SpeciesHabs/` – species habitat suitability rasters
+
+Each file in `SpeciesHabs/` is a **stepped (four-level) habitat suitability index**
+for a single butterfly species, derived by combining the relevant habitat masks
+with species–habitat expert weights.
+
+- Format: single-band GeoTIFF (Cloud Optimized GeoTIFF, COG).  
+- Grid / resolution: 10 × 10 m.  
+- CRS: `UTM32_EUREF89`, identical to the basemap (`lu_00_2021.tif`) and the
+  rasters in `Habitats/`.
+
+**Pixel values**
+
+Values are discrete and take only the following levels:
+
+- `0`   = not considered habitat for that species  
+- `0.3` = poor / low-quality habitat  
+- `0.7` = medium-quality habitat  
+- `1`   = high-quality habitat  
+- `NA`  = outside Denmark / outside the analysis domain
+
+These levels come from the expert “Majority” scores (0–3) in
+`Majority_Expert_Opinions.xlsx`, after scaling to the 0–1 range
+(Majority 1 → 0.3, Majority 2 → 0.7, Majority 3 → 1.0; Majority 0 is
+excluded and effectively coded as 0).
+
+**How the per-pixel value is constructed**
+
+For each species and pixel, we:
+
+1. Identify all conceptual habitats that are present in that pixel
+   (habitat mask == 1) in the chosen definition (**narrow** or **broad**).
+2. For each of those habitats, multiply the binary mask by the
+   species–habitat weight (one of 0.3, 0.7, 1.0).
+3. Assign to the pixel the **maximum** of these weighted values.  
+   If no contributing habitat is present, the pixel is set to `0`.
+
+Thus, the species rasters are **not probabilities**, but an ordinal
+four-level suitability index on the 0–1 scale, with possible values
+restricted to {0, 0.3, 0.7, 1}.
+
+
+**Naming convention**
+
+- `<species_name>_narrow_.tif`  
+- `<species_name>_broad_.tif`
+
+where `<species_name>` is a cleaned version of the Latin species name, e.g. `aglais_urticae` for *Aglais urticae*.
+
+For example:
+
+- `SpeciesHabs/aglais_urticae_narrow_.tif`  
+  Narrow habitat suitability map for *Aglais urticae*.
+
+- `SpeciesHabs/aglais_urticae_broad_.tif`  
+  Broad habitat suitability map for *Aglais urticae*.
+
+### `Species_PatchDistances/` – patch connectivity outputs
+
+The folder `Species_PatchDistances/` contains, for each species, habitat definition and threshold level:
+
+- Thresholded rasters (`*_High.tif`, `*_Medium.tif`, `*_Low.tif`),
+- Patch polygons (`*.shp` etc.), and
+- CSV files with summary statistics on nearest-neighbour distances (mean, median and number of patches).
+
+These files are described in more detail in the section *“Patch-based connectivity metrics from species rasters”*.
+
+## Table: overview of all delivered raster files
+
+The following chunk generates a table with one row per raster file in`SpeciesHabs/`. This makes it easy for data users to see exactly what is being delivered, and it ensures that the individual file
+names appear in the PDF (and are searchable). See Table \@ref(tab:data-delivery-table) for an overview of all delivered rasters.
+
+```{r data-delivery-table, echo = FALSE}
+library(dplyr)
+library(stringr)
+library(knitr)
+library(kableExtra)
+
+# List raster files in Habitats/ and SpeciesHabs/
+hab_files <- list.files("Habitats", pattern = "\\.tif$", full.names = TRUE)
+spp_files <- list.files("SpeciesHabs", pattern = "\\.tif$", full.names = TRUE)
+
+spp_df <- tibble(
+  Folder      = "SpeciesHabs",
+  File        = basename(spp_files),
+  Species_id  = str_remove(basename(spp_files),
+                           "_(narrow_|broad_)\\.tif$"),
+  Definition  = case_when(
+    str_detect(File, "_narrow_") ~ "narrow",
+    str_detect(File, "_broad_")  ~ "broad",
+    TRUE                         ~ "unknown"
+  ),
+  Description = "Species-specific habitat suitability index (0–1)"
+)
+
+files_df <- bind_rows(
+  spp_df %>%
+    rename(Name = Species_id)
+) %>%
+  arrange(Folder, File)
+
+files_df <- files_df %>%
+  dplyr::select(File, Name, Definition, Description) %>%   # optional, but narrower
+  dplyr::mutate(
+    # wrap description text early so lines aren't ridiculously long
+    Description = stringr::str_wrap(Description, width = 30)
+  )
+
+
+kbl(
+  files_df,
+  caption   = "Overview of delivered raster files in SpeciesHabs/.",
+  booktabs  = TRUE,
+  longtable = TRUE
+) |>
+  kableExtra::kable_styling(font_size = 8)
+
+
+```
+
+
+## Table: overview of patch-distance outputs
+
+The folder `Species_PatchDistances/` contains, for each species, habitat definition (narrow/broad) and suitability threshold (High/Medium/Low), a set of derived layers:
+
+- a thresholded habitat raster (`.tif`),
+- patch polygons (`.shp` + sidecar files),
+- nearest-neighbour indices (`*_closest_5.csv`),
+- full nearest-neighbour distance lists (`*_distances.rds`), and
+- summary statistics (`*_stats.csv`),
+
+plus a combined summary file `AllSpecies_PatchDistanceStats.csv`. Table \@ref(tab:patchdist-files-table) gives an overview of these outputs.
+
+
+```{r patchdist-files-table, echo=FALSE}
+library(dplyr)
+library(stringr)
+library(knitr)
+library(kableExtra)
+
+patch_dir <- "Species_PatchDistances"
+
+# List files in PatchDistances
+patch_files <- tibble(
+  File      = list.files(patch_dir, full.names = TRUE),
+  BaseName  = basename(File),
+  Ext       = tools::file_ext(BaseName)
+)
+
+# Keep only the "main" artefacts; sidecar shapefile files (.cpg, .dbf, .prj, .shx)
+# are implicitly part of the .shp and don't need their own rows.
+patch_files <- patch_files |>
+  filter(
+    Ext %in% c("tif", "shp", "csv", "rds")
+  )
+
+# Identify file type based on name pattern
+patch_files <- patch_files |>
+  mutate(
+    FileType = case_when(
+      Ext == "tif"                               ~ "Raster_tif",
+      Ext == "shp"                               ~ "Polygons_shp",
+      str_detect(BaseName, "closest_5\\.csv$")   ~ "NearestNeighbours_csv",
+      str_detect(BaseName, "distances\\.rds$")   ~ "Distances_rds",
+      str_detect(BaseName, "stats\\.csv$")       ~ "Stats_csv",
+      TRUE                                       ~ NA_character_
+    )
+  ) |>
+  filter(!is.na(FileType))
+
+# Strip file-type suffix to get the logical "group" name
+patch_files <- patch_files |>
+  mutate(
+    Group = BaseName |>
+      str_remove("_closest_5\\.csv$") |>
+      str_remove("_distances\\.rds$") |>
+      str_remove("_stats\\.csv$") |>
+      str_remove("\\.tif$") |>
+      str_remove("\\.shp$")
+  )
+
+# Parse species, definition and threshold from the group name:
+# <species>_<definition>_<Threshold>
+ids <- str_match(patch_files$Group, "^(.+?)_(narrow|broad)_(High|Medium|Low)$")
+
+patch_files <- patch_files |>
+  mutate(
+    Species    = ids[, 2],
+    Definition = ids[, 3],
+    Threshold  = ids[, 4]
+  ) |>
+  filter(!is.na(Species), !is.na(Definition), !is.na(Threshold))
+
+# Collapse to one row per species/definition/threshold
+tick <- function(x) ifelse(x, "Yes", "")
+
+
+patch_files_df <- patch_files |>
+  group_by(Species, Definition, Threshold, Group) |>
+  summarise(
+    Raster_tif           = tick(any(FileType == "Raster_tif")),
+    Polygons_shp         = tick(any(FileType == "Polygons_shp")),
+    NearestNeighbours    = tick(any(FileType == "NearestNeighbours_csv")),
+    Distances_rds        = tick(any(FileType == "Distances_rds")),
+    Stats_csv            = tick(any(FileType == "Stats_csv")),
+    .groups = "drop"
+  )
+# Optionally join summary stats if the combined CSV exists
+stats_path <- file.path(patch_dir, "AllSpecies_PatchDistanceStats.csv")
+
+if (file.exists(stats_path)) {
+  stats_df <- readr::read_csv(
+    stats_path,
+    show_col_types = FALSE
+  ) |>
+    # Ensure consistent types and names
+    mutate(
+      Definition = as.character(Definition),
+      Threshold  = as.character(Threshold)
+    )
+
+  patch_files_df <- patch_files_df |>
+    left_join(
+      stats_df,
+      by = c("Species" = "Species",
+             "Definition" = "Definition",
+             "Threshold" = "Threshold")
+    )
+}
+
+# Nice ordering and a short description column
+patch_files_df <- patch_files_df |>
+  mutate(
+    Definition = factor(Definition, levels = c("narrow", "broad")),
+    Threshold  = factor(Threshold,  levels = c("High", "Medium", "Low"))
+  ) |>
+  arrange(Species, Definition, Threshold) |>
+  mutate(
+    Description = stringr::str_wrap(
+      "Thresholded habitat raster, patch polygons, nearest-neighbour indices, full distance list, and summary statistics for this species, definition and threshold.",
+      width = 50
+    )
+  ) |>
+  # Select a reasonable subset of columns for the PDF
+  select(
+    Species, Definition, Threshold,
+    Raster_tif, Polygons_shp, NearestNeighbours,
+    Distances_rds, Stats_csv,
+    n_patches,
+    Description
+  )
+
+library(kableExtra)
+
+# Start from the actual column names to avoid mismatches
+header_labels <- names(patch_files_df)
+
+header_labels <- header_labels |> stringr::str_replace_all("_", " ") |> str_replace("NearestNeighbours", "Nearest Neighbours")|> str_wrap(width = 8)
+
+header_labels <- linebreak(
+  header_labels,
+  align = "c"
+)
+
+patch_files_df <- patch_files_df |> dplyr::mutate(Species = stringr::str_replace_all(Species, "_", " "), Species = stringr::str_to_sentence(Species)) |> dplyr::mutate(Description = str_wrap(Description, width = 11))
+
+colnames(patch_files_df) <- header_labels
+
+
+kbl(
+  patch_files_df,
+  caption   = "Overview of files and summary statistics in the Species PatchDistances folder.",
+  digits = 2,
+  booktabs  = TRUE,
+  longtable = TRUE,
+  escape    = FALSE,          # allow linebreak() LaTeX
+  col.names = header_labels
+) |>
+  kable_styling(
+    font_size    = 6,
+    latex_options = c("scale_down","hold_position")    # you can add "scale_down" too if you like
+  ) |>
+  # Make the Yes/empty columns narrow:
+  column_spec(4:8, width = "1.2cm") |>
+  # Give the Description column a fixed width so it wraps nicely:
+  column_spec(10, width = "4cm")
+
+
 ```
 
 # Overview
@@ -51,10 +386,14 @@ library(janitor)
 library(geodata)
 library(tidyterra)
 library(patchwork)
-# Custom / project packages:
 
+# Custom / project packages:
 library(SpeciesPoolR)
 library(BDRUtils)
+
+# New for connectivity / distances
+library(FNN)               # nearest neighbours between patches
+library(kableExtra)
 ```
 
 ## Data and folder structure
@@ -69,7 +408,7 @@ The code assumes the following structure relative to the project root:
   - `.../canopy_height.vrt`
 
 Output folders are created automatically if missing:
-- `Habitats/` – one COG per habitat (`*_narrow.tif`, `*_broad.tif`)
+
 - `SpeciesHabs/` – one COG per species (`*_narrow_.tif`, `*_broad_.tif`)
 - Misc derived layers in the working directory:
   - `HighDensity.tif`, `LowDensity.tif`, `canopy_height_bellow_2m.tif`, etc.
@@ -938,86 +1277,68 @@ for (i in seq_along(SPP)) {
   ## ---------- Mosaic TEMP rasters → final species rasters ----------
 
   # NARROW mosaic + mask
-  # NARROW mosaic + mask
-if (length(tmp_narrow_files) > 0) {
-  r_list_n <- lapply(tmp_narrow_files, terra::rast)
+  if (length(tmp_narrow_files) > 0) {
+    r_list_n <- lapply(tmp_narrow_files, terra::rast)
 
-  # temp mosaic file first
-  out_narrow_tmp <- file.path(
-    "SpeciesHabs",
-    paste0(spp_id, "_narrow_tmp_.tif")
-  )
+    out_narrow <- file.path(
+      "SpeciesHabs",
+      paste0(spp_id, "_narrow_.tif")
+    )
 
-  out_narrow <- file.path(
-    "SpeciesHabs",
-    paste0(spp_id, "_narrow_.tif")
-  )
+    # Pixel-wise max across all narrow habitat rasters
+    Final_narrow <- do.call(
+      terra::mosaic,
+      c(
+        r_list_n,
+        fun      = "max",
+        filename = out_narrow,
+        overwrite = TRUE
+      )
+    )
 
-  # Pixel-wise max across all narrow habitat rasters → temp file
-  Final_narrow <- do.call(
-    terra::mosaic,
-    c(
-      r_list_n,
-      fun      = "max",
-      filename = out_narrow_tmp,
+    # Mask by DK directly on disk (overwriting the same file)
+    Final_narrow <- terra::mask(
+      Final_narrow,
+      DK,
+      filename  = out_narrow,
       overwrite = TRUE
     )
-  )
 
-  # Mask by DK, write to *final* file (different from temp)
-  Final_narrow <- terra::mask(
-    Final_narrow,
-    DK,
-    filename  = out_narrow,
-    overwrite = TRUE
-  )
-
-  # Remove temp mosaic
-  unlink(out_narrow_tmp, force = TRUE)
-
-  message("NARROW species raster written: ", out_narrow, " @ ", Sys.time())
-} else {
-  message("No valid NARROW rasters found for ", spp_name)
-}
+    message("NARROW species raster written: ", out_narrow, " @ ", Sys.time())
+  } else {
+    message("No valid NARROW rasters found for ", spp_name)
+  }
 
   # BROAD mosaic + mask
-if (length(tmp_broad_files) > 0) {
-  r_list_b <- lapply(tmp_broad_files, terra::rast)
+  if (length(tmp_broad_files) > 0) {
+    r_list_b <- lapply(tmp_broad_files, terra::rast)
 
-  out_broad_tmp <- file.path(
-    "SpeciesHabs",
-    paste0(spp_id, "_broad_tmp_.tif")
-  )
+    out_broad <- file.path(
+      "SpeciesHabs",
+      paste0(spp_id, "_broad_.tif")
+    )
 
-  out_broad <- file.path(
-    "SpeciesHabs",
-    paste0(spp_id, "_broad_.tif")
-  )
+    Final_broad <- do.call(
+      terra::mosaic,
+      c(
+        r_list_b,
+        fun       = "max",
+        filename  = out_broad,
+        overwrite = TRUE
+      )
+    )
 
-  Final_broad <- do.call(
-    terra::mosaic,
-    c(
-      r_list_b,
-      fun       = "max",
-      filename  = out_broad_tmp,
+    Final_broad <- terra::mask(
+      Final_broad,
+      DK,
+      filename  = out_broad,
       overwrite = TRUE
     )
-  )
 
-  Final_broad <- terra::mask(
-    Final_broad,
-    DK,
-    filename  = out_broad,
-    overwrite = TRUE
-  )
-
-  unlink(out_broad_tmp, force = TRUE)
-
-  message("BROAD species raster written: ", out_broad, " @ ", Sys.time())
-} else {
-  message("No valid BROAD rasters found for ", spp_name)
-}
-
+    message("BROAD species raster written: ", out_broad, " @ ", Sys.time())
+  } else {
+    message("No valid BROAD rasters found for ", spp_name)
+  }
 
   ## ---------- Clean up temp stuff for this species ----------
 
@@ -1032,42 +1353,238 @@ if (length(tmp_broad_files) > 0) {
 
 ### Quick visual check for one species
 
-```{r plot-species-example, eval = FALSE}
-if (exists("SPP") && length(SPP) > 0) {
-  spp_example <- SPP[1]
-  spp_file <- file.path(
-    "SpeciesHabs",
-    paste0(janitor::make_clean_names(spp_example), "_narrow_.tif")
-  )
+```{r plot-species-example, eval = TRUE}
 
-  if (file.exists(spp_file)) {
-    spp_rast <- rast(spp_file)
-    plot(spp_rast, main = paste("Habitat suitability:", spp_example))
-  }
+SPP <- unique(Expert_opinion$art)
+
+if (length(SPP) > 0) {
+  spp_example <- SPP[3]
+  spp_id      <- janitor::make_clean_names(spp_example)
+  
+  file_n <- file.path("SpeciesHabs", paste0(spp_id, "_narrow_.tif"))
+  file_b <- file.path("SpeciesHabs", paste0(spp_id, "_broad_.tif"))
+  
+
+
+  Narrow <- rast(file_n)
+
+
+  Broad <- rast(file_b)
+  
+  spp_stack <- c(Narrow, Broad)
+  names(spp_stack) <- c("Narrow", "Broad")
+    
+  ggplot() +
+    geom_spatraster(data = spp_stack) +
+    scale_fill_viridis_c(na.value = NA) +
+    facet_wrap(~lyr) +
+      labs(
+        title = paste("Habitat suitability (narrow vs broad):", spp_example),
+        x = NULL, y = NULL,
+        fill = "Suitability"
+      ) +
+      theme_minimal()
 }
 ```
 
 
+# Patch-based connectivity metrics from species rasters
 
-# 9. Example: fusing multiple rasters
+From the species-level habitat suitability rasters in `SpeciesHabs/` we derive patch-based connectivity metrics.
 
-As a general pattern, you can fuse a list of rasters by taking the pixel-wise
-maximum using `mosaic()`:
+For each species and for both the **narrow** and **broad** habitat definitions, we:
+  
+  1. Threshold the habitat suitability raster at three values:
+    - **High**: > 0.9  
+    - **Medium**: > 0.6  
+    - **Low**: > 0.2
+  2. Convert the thresholded raster to polygons (habitat patches).
+  3. Use k-nearest neighbours (via centroid coordinates and `FNN::get.knn`) to identify, for each patch, its closest neighbours, and then compute polygon–polygon distances between those patches with `terra::distance`.
+  4. Save:
+    - the thresholded raster
+    - the patch polygons, and
+    - per-species, per-definition, per-threshold summary statistics (mean and median nearest-neighbour distances).
 
-```{r fuse-raster-list, eval = FALSE}
-# Example: fuse a list of SpatRasters by pixel-wise maximum
-# (replace r1, r2, r3 with real objects)
-raster_list  <- list(r1, r2, r3)
-fused_raster <- do.call(mosaic, c(raster_list, fun = max))
+All outputs go into a dedicated folder `Species_PatchDistances/`, and results explicitly distinguish **narrow** vs **broad** species rasters.
 
-plot(fused_raster, main = "Fused raster (pixel-wise max)")
+
+```{r patch-distances, eval = FALSE}
+# Patch-based nearest-neighbour distances for all species
+# using both narrow and broad habitat rasters
+
+spp_files <- list.files(
+  path  = "SpeciesHabs",
+  pattern = "\\.tif$",
+  full.names = TRUE
+)
+
+out_dir <- "Species_PatchDistances"
+dir.create(out_dir, showWarnings = FALSE)
+
+# Thresholds and labels
+thresholds <- c(
+  High   = 0.9,
+  Medium = 0.6,
+  Low    = 0.2
+)
+
+all_stats <- list()
+
+for (level in seq_along(thresholds)) {
+  level_name <- names(thresholds)[level]
+  thr_value  <- thresholds[level]
+  
+  message("Starting processing for ", level_name,
+          " threshold (>", thr_value, ") @ ", Sys.time())
+  
+  for (i in seq_along(spp_files)) {
+    
+    fpath <- spp_files[i]
+    fbase <- basename(fpath)
+    
+    # Identify narrow vs broad from filename: *_narrow_.tif / *_broad_.tif
+    definition <- dplyr::case_when(
+      stringr::str_detect(fbase, "_narrow_") ~ "narrow",
+      stringr::str_detect(fbase, "_broad_")  ~ "broad",
+      TRUE                                   ~ "unknown"
+    )
+    
+    species_id <- fbase |>
+      stringr::str_remove("_narrow_.tif$") |>
+      stringr::str_remove("_broad_.tif$")
+    
+    species_label <- paste0(species_id, "_", definition)
+    
+    message("  Processing ", species_label,
+            " (", i, " of ", length(spp_files), ") @ ", Sys.time())
+    
+    # --- 1) Thresholded raster and polygons ---
+    
+    density_filename <- file.path(
+      out_dir,
+      paste0(species_label, "_", level_name, ".tif")
+    )
+    
+    polygon_filename <- file.path(
+      out_dir,
+      paste0(species_label, "_", level_name, ".shp")
+    )
+    
+    if (!file.exists(polygon_filename)) {
+      message("    Polygonizing ", level_name, " layer @ ", Sys.time())
+      
+      Spp_temp <- terra::rast(fpath)
+      # binary mask for this suitability threshold
+      layer_bin <- terra::ifel(Spp_temp > thr_value, 1, 0)
+      
+      # write the thresholded raster (handy for inspection)
+      terra::writeRaster(
+        layer_bin, density_filename,
+        overwrite = TRUE,
+        wopt = list(
+          datatype = "INT1U",
+          gdal     = c("COMPRESS=ZSTD", "TILED=YES", "BIGTIFF=IF_SAFER")
+        )
+      )
+      
+      # polygons of suitable habitat patches
+      layer_polygons <- terra::as.polygons(layer_bin) |>
+        terra::disagg()
+      
+      terra::writeVector(layer_polygons, polygon_filename, overwrite = TRUE)
+    } else {
+      message("    Polygon file already exists, reusing @ ", Sys.time())
+      layer_polygons <- terra::vect(polygon_filename)
+    }
+    
+    n_patches <- nrow(layer_polygons)
+    
+    # If fewer than 2 patches, distances don’t make sense
+    if (n_patches < 2) {
+      message("    < 2 patches; skipping distance stats for ",
+              species_label, " ", level_name)
+      next
+    }
+    
+    # --- 2) Nearest neighbours based on centroids ---
+    
+    closest_filename <- file.path(
+      out_dir,
+      paste0(species_label, "_", level_name, "_closest_5.csv")
+    )
+    
+    if (!file.exists(closest_filename)) {
+      message("    Calculating nearest neighbours @ ", Sys.time())
+      
+      coords <- terra::crds(terra::centroids(layer_polygons))
+      
+      # Use up to 5 neighbours, but not more than n_patches - 1
+      k_use <- max(1, min(5, n_patches - 1))
+      
+      nn <- FNN::get.knn(coords, k = k_use)
+      nn_index <- as.data.frame(nn$nn.index)
+      
+      readr::write_csv(nn_index, closest_filename)
+    } else {
+      message("    Nearest-neighbour indices already exist; reading")
+      nn_index <- readr::read_csv(
+        closest_filename,
+        col_names = FALSE,
+        show_col_types = FALSE
+      )
+    }
+    
+    # --- 3) Distances and summary stats ---
+    
+    rds_filename <- file.path(
+      out_dir,
+      paste0(species_label, "_", level_name, "_distances.rds")
+    )
+    csv_filename <- file.path(
+      out_dir,
+      paste0(species_label, "_", level_name, "_stats.csv")
+    )
+    
+    if (!file.exists(csv_filename)) {
+      message("    Calculating distance stats for ", level_name,
+              " @ ", Sys.time())
+      
+      all_distances <- lapply(seq_len(nrow(nn_index)), function(row_i) {
+        ref    <- layer_polygons[row_i, ]
+        others <- layer_polygons[as.integer(nn_index[row_i, ]), ]
+        as.numeric(terra::distance(ref, others))
+      })
+      
+      saveRDS(all_distances, rds_filename)
+      
+      all_distances_vec <- unlist(all_distances, use.names = FALSE)
+      
+      stats_df <- data.frame(
+        Species      = species_id,
+        Definition   = definition,          # narrow vs broad
+        Threshold    = level_name,          # High / Medium / Low
+        ThresholdVal = thr_value,
+        n_patches    = n_patches,
+        Median       = stats::median(all_distances_vec, na.rm = TRUE),
+        Mean         = base::mean(all_distances_vec, na.rm = TRUE)
+      )
+      
+      readr::write_csv(stats_df, csv_filename)
+      
+      key <- paste(species_label, level_name, sep = "_")
+      all_stats[[key]] <- stats_df
+    } else {
+      message("    Stats file already exists; skipping")
+    }
+  }
+}
+
+
+if (length(all_stats) > 0) {
+  all_stats_df <- dplyr::bind_rows(all_stats)
+  readr::write_csv(
+    all_stats_df,
+    file.path(out_dir, "AllSpecies_PatchDistanceStats.csv")
+  )
+}
 ```
-
-# Notes
-
-* Many of these steps are computationally heavy.
-  If you just want the code in the README without re-running all computations,
-  set `eval = FALSE` on the corresponding chunks (already done for most big ones).
-
-* Outputs are written as **Cloud Optimized GeoTIFFs** so they can be reused in other scripts, GIS software, and shared via the center’s data-sharing system for both contemporary and temporal habitat analyses.
-

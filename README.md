@@ -1,342 +1,731 @@
+Butterfly habitat layers and species habitat maps
+================
 
-<!-- README.md is generated from README.Rmd. Please edit that file -->
+- [1 Overview](#1-overview)
+- [2 Packages](#2-packages)
+- [3 Input data](#3-input-data)
+  - [3.1 Majority expert opinions](#31-majority-expert-opinions)
+  - [3.2 Classes butterflies](#32-classes-butterflies)
+  - [3.3 How the two tables interact](#33-how-the-two-tables-interact)
+- [4 Expert opinions and basemap](#4-expert-opinions-and-basemap)
+- [5 Map Excel habitat classes to basemap classes (narrow &
+  broad)](#5-map-excel-habitat-classes-to-basemap-classes-narrow--broad)
+- [6 \# Build habitat masks (COGs) per habitat (narrow &
+  broad)](#6--build-habitat-masks-cogs-per-habitat-narrow--broad)
+  - [6.0.1 Quick visual check](#601-quick-visual-check)
+- [7 EcoDes structural layers: vegetation density and canopy
+  height](#7-ecodes-structural-layers-vegetation-density-and-canopy-height)
+  - [7.0.1 Quick visual check](#701-quick-visual-check)
+- [8 5. Forest edge distance and 200 m forest
+  border](#8-5-forest-edge-distance-and-200-m-forest-border)
+  - [8.0.1 Quick visual check](#801-quick-visual-check)
+- [9 Forest gaps: canopy \< 2 m inside forest holes \> 400
+  m²](#9-forest-gaps-canopy--2-m-inside-forest-holes--400-m²)
+  - [9.0.1 Quick visual check](#901-quick-visual-check)
+- [10 Distance-to-coast masks (200, 400, 800
+  m)](#10-distance-to-coast-masks-200-400-800-m)
+  - [10.0.1 Quick visual check](#1001-quick-visual-check)
+- [11 Species-specific habitat
+  rasters](#11-species-specific-habitat-rasters)
+  - [11.0.1 Quick visual check for one
+    species](#1101-quick-visual-check-for-one-species)
+- [12 9. Example: fusing multiple
+  rasters](#12-9-example-fusing-multiple-rasters)
+- [13 Notes](#13-notes)
 
-## Overview
+# 1 Overview
 
-This repository aims to transform expert opinion data into species
-distribution maps by linking habitat classifications from expert
-assessments to existing spatial basemaps.
+This repository documents the workflow used to generate spatial layers
+for:
 
-## Loading Necessary Packages
+- **Project 1 – Contemporary Habitat Configuration and Population
+  Genomics**, and
+- the habitat-suitability component that will be reused in **Project 2 –
+  Historical / Temporal Habitat Configuration and Population
+  Museomics**.
 
-We begin by loading the required R packages:
+The pipeline:
+
+1.  Reads **expert-opinion habitat suitability** for butterfly species.
+2.  Reads a **habitat class mapping** linking conceptual habitats to a
+    national land-use basemap.
+3.  Maps those habitats to land-use classes via the basemap VAT table.
+4.  Generates **binary habitat masks per habitat**.
+5.  Derives **structural layers** from EcoDes data (vegetation density,
+    canopy height).
+6.  Builds **forest-edge distance** and **forest-gap** layers.
+7.  Builds **distance-to-coast** masks.
+8.  Combines habitat masks, structural layers, and expert opinions into
+    species-specific habitat rasters, again for both narrow and broad
+    definitions.
+
+Most outputs are written as Cloud Optimized GeoTIFFs (COGs) for
+efficient sharing and reuse.
+
+# 2 Packages
 
 ``` r
-library(readxl)
-library(dplyr)
 library(terra)
-library(foreign)
-library(stringdist)
+library(tidyverse)   # dplyr, tidyr, stringr, etc.
+library(foreign)     # read.dbf
+library(readxl)
+library(janitor)
+library(geodata)
+library(tidyterra)
+library(patchwork)
+# Custom / project packages:
+
+library(SpeciesPoolR)
+library(BDRUtils)
 ```
 
-## Reading the Expert Opinion Table
+# 3 Input data
 
-We load the expert opinion data from an Excel file:
+This workflow uses two main tabular inputs plus a national land-use
+basemap with an associated Value Attribute Table (VAT).
+
+## 3.1 Majority expert opinions
+
+This file (`Majority_Expert_Opinions.xlsx`) stores the expert-opinion
+habitat suitability for each species.
+
+Columns:
+
+- `art` Latin species name (e.g. *Aglais urticae*).
+
+- `Habitat` Text label for the habitat category (e.g. “Grøftekanter
+  (0–3)”) that matches the `habitat` column in
+  `Classes_Butterfiles_.xlsx` once the “(0–3)” suffix is removed.
+
+- `Majority` Integer score in the range 0–3, summarizing the experts’
+  majority score for that species–habitat combination.
+
+- `proportion` Proportion of experts who answered (e.g. 0.6, 0.8). *(Not
+  used in the current pipeline; we rely on `Majority`)*.
+
+In the code, we:
+
+1.  Convert `Majority` to numeric.
+2.  Rescale it to the range 0–1 by dividing by 3 and rounding to 1
+    decimal place.
+3.  Filter out combinations with `Majority == 0` (no use of that
+    habitat).
+
+We then use this rescaled `Majority` as a **weight** when combining
+habitat rasters for each species.
+
+## 3.2 Classes butterflies
+
+This file (`Classes_Butterfiles_.xlsx`) links conceptual habitat
+categories to one or more land-cover classes in the national land-use
+basemap (`lu_00_2021.tif`).
+
+Columns:
+
+- `habitat` Named habitat category (e.g. *Næringsrig skov*, *Tæt skov*,
+  *Lysåben skov*, *Skovkanter*).
+
+- `Narrow`:A list of “narrow” land-use classes that appear in the VAT
+  columns `C_12`, `C_09`, or `C_05` of `lu_00_2021.tif`. These strings
+  often contain multiple classes separated by dashes/commas; they are
+  cleaned and split so each individual class (e.g. “Birk”, “Fyr”,
+  “Stilkege-krat”) becomes its own row.
+
+- `Broad` (in the Excel the column is named Broad with a trailing space)
+  A broader / wider grouping of classes. Some rows contain the text “as
+  narrow”, meaning the broad definition is identical to the narrow one.
+  If Broad is missing or “as narrow”, we default to using Narrow here.
+
+- `Additional layers` Optional notes about extra spatial constraints,
+  often referring to ECODES layers, e.g.:
+
+  - `ECODES density > 90 %`: use **high-density forest** mask
+  - `ECODES density < 50 %`: use **low-density forest** mask
+  - `% meters of all forest edges` /
+    `Only include edges e.g. 2 metres on both sides ...`: use
+    **forest-edge band**
+  - `ECODES; areas with hight < 2 metres in forest, and > 20x20 m wihtin forests`:
+    use **canopy gaps \< 2 m, \> 400 square meters**
+  - `OBS - distance to coast 200 m`: use **coast 200 m mask**
+
+  These are used to **automatically attach ECODES structural masks** to
+  those habitats (and thus to the species that use them).
+
+- `extracted_text_05`, `extracted_text_09`, `extracted_text_12`
+  Extracted label text corresponding to different VAT columns.
+
+Conceptually:
+
+- `Classes_Butterfiles_.xlsx` says *for habitat H, include these
+  land-use classes (narrow vs broad), and optionally combine with these
+  ECODES structural layers*.
+- The VAT table for `lu_00_2021.tif` tells us *“which numeric codes
+  correspond to those class labels”*.
+- We then build **binary habitat rasters**, for both a narrow and broad
+  definition, and later combine them with species-level expert weights.
+
+## 3.3 How the two tables interact
+
+1.  `Classes_Butterfiles_.xlsx` defines how conceptual habitats map to
+    the basemap (`habitat`(`Narrow` / `Broad`): `VALUE` via the VAT),
+    and which habitats should be further constrained by ECODES
+    structural layers.
+
+2.  `Majority_Expert_Opinions.xlsx` defines, for each species `art`,
+    which conceptual habitats it uses and with what weight (`Majority`).
+
+3.  The **species habitat rasters** in `SpeciesHabs/` are built by:
+
+    - starting from the relevant habitat masks in `Habitats/` (narrow
+      and/or broad),
+    - for some habitats, chaining in extra ECODES structural layers (low
+      density, high density, forest edges, canopy gaps, coast 200 m),
+    - multiplying each masked habitat by the expert weight `Majority`
+      for that species, and
+    - taking the pixel-wise maximum across all contributing habitats for
+      that species.
+
+So species that depend on **low-density forest**, **forest edges**, or
+**coastal areas** automatically get those structural constraints
+applied, but only for the relevant habitats.
+
+# 4 Expert opinions and basemap
 
 ``` r
-Experts <- readxl::read_xlsx("Majority_Expert_Opinions.xlsx")
+# Expert opinions (0–3) scaled to 0–1 and filtered
+Expert_opinion <- read_excel("Majority_Expert_Opinions.xlsx") |>
+  dplyr::mutate(Majority = round(as.numeric(Majority) / 3, 1)) |>
+  dplyr::filter(Majority > 0)
+
+# Basemap raster (land-use)
+raster_file <- "Basemap/lu_00_2021.tif"
+r <- rast(raster_file)
+
+DK <- geodata::gadm("Denmark", level = 0, path = getwd()) |>
+  terra::project(terra::crs(r))
+
+# Value Attribute Table (VAT) for the basemap
+dbf_data <- read.dbf("Basemap/lu_00_2021.tif.vat.dbf")
+
+# Clean up the C_12 labels: drop digits, trim whitespace
+dbf_data$C_12 <- trimws(gsub("[0-9]", "", dbf_data$C_12))
 ```
 
-## Extracting and Cleaning Unique Habitat Names
+# 5 Map Excel habitat classes to basemap classes (narrow & broad)
 
-The first step is to extract all unique habitat names from the expert
-table and clean them by removing specific formatting artifacts (e.g.,
-numerical indicators like `(0-3)`).
+We build two long tables:
 
-``` r
-UniqueHabs <- unique(Experts$Habitat)
-UniqueHabs_clean <- trimws(gsub("\\s*\\(0-3\\)$", "", UniqueHabs))
-```
-
-This process results in 34 distinct habitat categories that need to be
-matched with habitat classifications from the spatial basemap.
-
-# Comparison with Lu_00 in basemap
-
-## Loading Basemap Habitat Classifications
-
-To perform the matching, we extract unique habitat classifications from
-the attribute table (`.dbf` file) of the basemap.
+- `Long_narrow`: mapping `habitat` to VAT `VALUE` codes using the
+  **Narrow** column,
+- `Long_broad`: mapping `habitat` to VAT `VALUE` codes using the
+  **Broad** column.
 
 ``` r
-lu_00 <- foreign::read.dbf("Basemap/lu_00_2021.tif.vat.dbf")
 
-C_05 <- unique(as.character(lu_00$C_05))
-C_09 <- unique(as.character(lu_00$C_09))
-C_12 <- unique(as.character(lu_00$C_12))
+class_map_raw <- readxl::read_excel("Classes_Butterfiles_.xlsx")
 
-# Clean C_12 by removing numbers and trimming whitespace
-C_12 <- trimws(gsub("[0-9]", "", C_12))
-```
+# Handle possible trailing space in the column name ("Broad " vs "Broad")
+if ("Broad " %in% names(class_map_raw) && !"Broad" %in% names(class_map_raw)) {
+  class_map_raw <- dplyr::rename(class_map_raw, Broad = `Broad `)
+}
 
-## Creating a Dataframe for Habitat Matching
+class_map <- class_map_raw |>
+  dplyr::mutate(
+    # Interpret "as narrow" (case-insensitive) in Broad as "use Narrow"
+    Broad = ifelse(
+      stringr::str_detect(Broad, regex("as narrow", ignore_case = TRUE)),
+      Narrow, Broad
+    ),
+    # If Broad is NA or empty, also fall back to Narrow
+    Broad = ifelse(is.na(Broad) | trimws(Broad) == "", Narrow, Broad)
+  )
 
-We construct a dataframe to store the original and cleaned habitat names
-along with their corresponding matches in the basemap data.
-
-``` r
-DF <- data.frame(
-  unique_habs = UniqueHabs,
-  clean_unique_habs = UniqueHabs_clean,
-  c_05 = NA,
-  c_09 = NA,
-  c_12 = NA
+fyr_types <- c(
+  "Bjergfyr", "Frans bjergfyr", "Østrigsk fyr", "Skovfyr",
+  "Fransk bjergfyr", "Weymouthsfyr", "Østrigsk fyr", "Skovfyr"
 )
+
+
+# Helper to clean and split a given habitat column ("Narrow" or "Broad")
+clean_habitat_column <- function(df, col_name) {
+
+  # 1) Do all the string cleaning and splitting
+  df_long <- df |>
+    dplyr::select(habitat, Narrow = dplyr::all_of(col_name)) |>
+    dplyr::mutate(
+      # Fix various naming issues
+      Narrow = stringr::str_replace_all(Narrow, "Stilkege-krat", "Stilkege krat"),
+      Narrow = stringr::str_replace_all(
+        Narrow,
+        "Elle- og askeskov ved vandløb, søer og væld",
+        "Elle og askeskov ved vandløb, søer og væld"
+      ),
+      Narrow = stringr::str_replace_all(Narrow, "Ege-blandskov", "Ege blandskov"),
+      Narrow = stringr::str_replace_all(
+        Narrow,
+        stringr::fixed("Lav bebyggelse (Low buildings), Have"),
+        "Lav bebyggelse"
+      ),
+      Narrow = stringr::str_replace_all(
+        Narrow,
+        stringr::fixed("Overdrev (Slette)"),
+        "Slette, Overdrev (Slette)"
+      ),
+      Narrow = stringr::str_replace_all(
+        Narrow,
+        stringr::fixed("Overdrev (overdrev)"),
+        "Slette, Overdrev (overdrev)"
+      ),
+      Narrow = stringr::str_replace_all(
+        Narrow,
+        stringr::fixed("Overdrev (græsset)"),
+        "Slette, Overdrev (græsset)"
+      ),
+      Narrow = stringr::str_replace_all(Narrow, stringr::fixed("Kilder"), "Kildevæld"),
+      Narrow = stringr::str_replace_all(Narrow, stringr::fixed("Ruin"), "Ruin, gravhøj"),
+      Narrow = stringr::str_replace_all(Narrow, stringr::fixed("Vandløbskant"), "Vandloebskant")
+    ) |>
+    dplyr::mutate(Narrow = stringr::str_split(Narrow, "-")) |>
+    tidyr::unnest(Narrow) |>
+    dplyr::mutate(
+      Narrow = stringr::str_trim(Narrow),
+      Narrow = stringr::str_remove_all(Narrow, "^,|,$")
+    ) |>
+    dplyr::filter(
+      Narrow != "",
+      !is.na(Narrow),
+      Narrow != ",",
+      Narrow != "NA"
+    ) |>
+    dplyr::mutate(
+      Narrow = stringr::str_replace_all(
+        Narrow,
+        "Elle og askeskov ved vandløb, søer og væld",
+        "Elle- og askeskov ved vandløb, søer og væld"
+      ),
+      Narrow = stringr::str_replace_all(Narrow, "Stilkege krat", "Stilkege-krat"),
+      Narrow = stringr::str_replace_all(Narrow, "Ege blandskov", "Ege-blandskov")
+    )
+
+  # 2) Expand generic "Fyr" to all specific Fyr types
+  Fyr_expanded <- df_long |>
+    dplyr::filter(Narrow == "Fyr") |>
+    dplyr::select(habitat) |>
+    tidyr::uncount(length(fyr_types)) %>%
+    dplyr::mutate(
+      Narrow = rep(fyr_types, times = nrow(.) / length(fyr_types))
+    )
+
+  # 3) Replace generic "Fyr" rows with the expanded ones
+  df_long <- df_long |>
+    dplyr::filter(Narrow != "Fyr") |>
+    dplyr::bind_rows(Fyr_expanded)
+
+  df_long
+}
+
+
+Long_narrow <- clean_habitat_column(class_map, "Narrow")
+Long_broad  <- clean_habitat_column(class_map, "Broad")
 ```
 
-## Defining a String Matching Function
-
-To find the best match for each habitat name, we use the Levenshtein
-distance, which measures the similarity between two strings. The
-function returns the closest matching habitat name from the provided
-list of candidates.
+Now we identify which VAT column (`C_12`, `C_09`, `C_05`) each class
+belongs to and assign the corresponding `VALUE` code, separately for
+narrow and broad.
 
 ``` r
-find_closest <- function(target, candidates) {
-  # Compute Levenshtein distances between the target and candidate habitat names
-  distances <- stringdist(target, candidates, method = "lv")
-  # Return the most similar match
-  candidates[which.min(distances)]
+add_vat_values <- function(Long, dbf) {
+  Long$layer <- NA_character_
+  Long$value <- NA_integer_
+
+  Long$layer[Long$Narrow %in% dbf$C_12] <- "C_12"
+  Long$layer[Long$Narrow %in% dbf$C_09] <- "C_09"
+  Long$layer[Long$Narrow %in% dbf$C_05] <- "C_05"
+
+  NotHereYet <- Long |>
+    dplyr::filter(is.na(layer)) |>
+    dplyr::pull(Narrow) |>
+    unique()
+
+  if (length(NotHereYet) > 0) {
+    message("Classes not found in VAT: ",
+            paste(NotHereYet, collapse = ", "))
+  }
+
+  Long <- Long |>
+    dplyr::filter(!is.na(layer))
+
+  for (i in seq_len(nrow(Long))) {
+    col_i <- Long$layer[i]
+    val_i <- Long$Narrow[i]
+    Long$value[i] <- dbf$VALUE[dbf[[col_i]] == val_i]
+  }
+
+  Long
+}
+
+Long_narrow <- add_vat_values(Long_narrow, dbf_data)
+Long_broad  <- add_vat_values(Long_broad,  dbf_data)
+
+HABS <- sort(unique(class_map$habitat))
+dir.create("Habitats", showWarnings = FALSE)
+```
+
+# 6 \# Build habitat masks (COGs) per habitat (narrow & broad)
+
+For each habitat, we build two binary rasters:
+
+- `*_narrow.tif` → based on the **Narrow** definition.
+- `*_broad.tif` → based on the **Broad** (“wide”) definition.
+
+``` r
+for (hab_i in HABS) {
+
+  # NARROW definition
+  Temp_narrow <- Long_narrow |>
+    dplyr::filter(habitat == hab_i) |>
+    dplyr::pull(value)
+
+  if (length(Temp_narrow) > 0) {
+    NewRast_narrow <- terra::ifel(as.numeric(r) %in% Temp_narrow, 1, 0)
+
+    out_narrow <- paste0(
+      "Habitats/",
+      janitor::make_clean_names(hab_i),
+      "_narrow.tif"
+    )
+
+    SpeciesPoolR::write_cog(NewRast_narrow, out_narrow)
+  }
+
+  # BROAD (wide) definition
+  Temp_broad <- Long_broad |>
+    dplyr::filter(habitat == hab_i) |>
+    dplyr::pull(value)
+
+  if (length(Temp_broad) > 0) {
+    NewRast_broad <- terra::ifel(as.numeric(r) %in% Temp_broad, 1, 0)
+
+    out_broad <- paste0(
+      "Habitats/",
+      janitor::make_clean_names(hab_i),
+      "_broad.tif"
+    )
+
+    SpeciesPoolR::write_cog(NewRast_broad, out_broad)
+  }
 }
 ```
 
-## Performing Habitat Matching
+### 6.0.1 Quick visual check
 
-We apply the string matching function to find the closest corresponding
-habitat name in the basemap classifications for each expert-identified
-habitat.
+<img src="man/figures/README-plot-habitat-example-1.png" width="100%" />
+
+# 7 EcoDes structural layers: vegetation density and canopy height
+
+We derive:
+
+- a high-density and low-density forest mask from EcoDes vegetation
+  density, and
+- a canopy \< 2 m mask from EcoDes canopy height.
 
 ``` r
-DF$c_05 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_05)
-DF$c_09 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_09)
-DF$c_12 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_12)
+terraOptions(memfrac = 0.8, tempdir = "D:/WD_R/temp")
+Sys.setenv(GDAL_NUM_THREADS = 10)
 ```
 
-## Reviewing and Exporting the Results
-
-We display the final table for review:
-
-| unique_habs                                                          | clean_unique_habs                                              | c_05                               | c_09                               | c_12                                       |
-|:---------------------------------------------------------------------|:---------------------------------------------------------------|:-----------------------------------|:-----------------------------------|:-------------------------------------------|
-| Avneknippemose (0-3)                                                 | Avneknippemose                                                 | Avneknippemose                     | Avneknippemose                     | Jernbane                                   |
-| Dyrkede marker (I omdrift) (0-3)                                     | Dyrkede marker (I omdrift)                                     | Frit areal (overdrev)              | Frit areal (overdrev)              | Ikke kortlagt                              |
-| Forstæder og villakvarterer (0-3)                                    | Forstæder og villakvarterer                                    | Frit areal (overdrev)              | Frit areal (overdrev)              | Andet bebyggelse                           |
-| Grøftekanter (0-3)                                                   | Grøftekanter                                                   | Golfbane                           | Golfbane                           | Natur, tør                                 |
-| Højmose, nedbrudt højmose og hængesæk (0-3)                          | Højmose, nedbrudt højmose og hængesæk                          | Nedbrudt højmose                   | Nedbrudt højmose                   | Høj bebyggelse                             |
-| Ikke dyrkede, ikke bebyggede åbne områder, inklusive ruderater (0-3) | Ikke dyrkede, ikke bebyggede åbne områder, inklusive ruderater | Strandvold med flerårig vegetation | Strandvold med flerårig vegetation | Landbrug, intensivt, midlertidige afgrøder |
-| Kildevæld (0-3)                                                      | Kildevæld                                                      | Kildevæld                          | Kildevæld                          | Skov                                       |
-| Klitlavninger (0-3)                                                  | Klitlavninger                                                  | Klitlavning                        | Klitlavning                        | Bygning                                    |
-| Klitter (0-3)                                                        | Klitter                                                        | Klit                               | Klit                               | Erhverv                                    |
-| Krat (0-3)                                                           | Krat                                                           | Krat                               | Krat                               | Hav                                        |
-| Kyst-skrænter (0-3)                                                  | Kyst-skrænter                                                  | Skrænt                             | Skrænt                             | Natur, tør                                 |
-| Landbrugsbebyggelse, nedlagte landbrug mm (0-3)                      | Landbrugsbebyggelse, nedlagte landbrug mm                      | Lav bebyggelse                     | Lav bebyggelse                     | Landbrug, intensivt, permanente afgrøder   |
-| Landsbyer (0-3)                                                      | Landsbyer                                                      | Land                               | Land                               | Vandløb                                    |
-| Levende hegn (0-3)                                                   | Levende hegn                                                   | Strandeng                          | Strandeng                          | Jernbane                                   |
-| Lysåben skov (0-3)                                                   | Lysåben skov                                                   | Ege-blandskov                      | Ege-blandskov                      | Skov                                       |
-| Mark kanter og markskel (0-3)                                        | Mark kanter og markskel                                        | Ukultiveret areal                  | Ukultiveret areal                  | Lav bebyggelse                             |
-| Midtby (centrum af større byer) (0-3)                                | Midtby (centrum af større byer)                                | Skovbevoksede tørvemoser           | Skovbevoksede tørvemoser           | Andet bebyggelse                           |
-| Næringsfattig skov (0-3)                                             | Næringsfattig skov                                             | Vinteregeskov                      | Vinteregeskov                      | Natur, tør                                 |
-| Næringsfattig våd eng (0-3)                                          | Næringsfattig våd eng                                          | Tidvis våd eng                     | Tidvis våd eng                     | Natur, våd                                 |
-| Næringsrig skov (0-3)                                                | Næringsrig skov                                                | Vinteregeskov                      | Vinteregeskov                      | Natur, tør                                 |
-| Næringsrig våd eng (0-3)                                             | Næringsrig våd eng                                             | Tidvis våd eng                     | Tidvis våd eng                     | Natur, våd                                 |
-| Overdrev (0-3)                                                       | Overdrev                                                       | Overdrev                           | Overdrev                           | Bykerne                                    |
-| Rigkær (0-3)                                                         | Rigkær                                                         | Rigkær                             | Rigkær                             | Skov                                       |
-| Skovbevokset tørvmose (0-3)                                          | Skovbevokset tørvmose                                          | Skovbevoksede tørvemoser           | Skovbevoksede tørvemoser           | Skov, våd                                  |
-| Skovkanter (0-3)                                                     | Skovkanter                                                     | Skovklit                           | Skovklit                           | Skov                                       |
-| Skovlysninger (0-3)                                                  | Skovlysninger                                                  | Skovfyr                            | Skovfyr                            | Bygning                                    |
-| Skovmose/Sumpskov (0-3)                                              | Skovmose/Sumpskov                                              | Strandsump                         | Strandsump                         | Skov                                       |
-| Strandeng (0-3)                                                      | Strandeng                                                      | Strandeng                          | Strandeng                          | Jernbane                                   |
-| Strandoverdrev (0-3)                                                 | Strandoverdrev                                                 | Surt overdrev                      | Surt overdrev                      | Erhverv                                    |
-| Tæt skov (0-3)                                                       | Tæt skov                                                       | Skov                               | Skov                               | Skov                                       |
-| Tør hede (0-3)                                                       | Tør hede                                                       | Tør hede                           | Tør hede                           | Jernbane                                   |
-| Vandløbskanter (0-3)                                                 | Vandløbskanter                                                 | Vandloebskant                      | Skydebane                          | Vandløb                                    |
-| Vejkanter og vejskråninger (0-3)                                     | Vejkanter og vejskråninger                                     | Vinteregeskov                      | Vinteregeskov                      | Natur, våd                                 |
-| Våd hede (0-3)                                                       | Våd hede                                                       | Våd hede                           | Våd hede                           | Jernbane                                   |
-
-Finally, we export the matched data to an Excel file for further
-analysis or verification.
-
 ``` r
-openxlsx::write.xlsx(DF, "Comparison.xlsx")
+Density <- rast(
+  "o:/Nat_Ecoinformatics/B_Read/Denmark/DK_EcoDes/EcoDes-DK15_v1.1.0/vegetation_density/vegetation_density.vrt"
+)
+
+thr <- app(
+  Density,
+  fun = function(x) cbind(as.integer(x > 9000L), as.integer(x < 5000L)),
+  filename = "density_thresholds.tif",
+  overwrite = TRUE,
+  cores = max(1, parallel::detectCores() / 2),
+  wopt = list(
+    names    = c("HighDensity", "LowDensity"),
+    datatype = "INT1U",
+    gdal     = c(
+      "COMPRESS=ZSTD", "TILED=YES",
+      "BLOCKXSIZE=512", "BLOCKYSIZE=512",
+      "NUM_THREADS=ALL_CPUS", "BIGTIFF=IF_SAFER"
+    )
+  )
+)
+
+BDRUtils::write_cog(thr[[1]], "HighDensity.tif")
+BDRUtils::write_cog(thr[[2]], "LowDensity.tif")
 ```
 
-# Comparison with Lu_01 in basemap
-
-## Loading Basemap Habitat Classifications
-
-To perform the matching, we extract unique habitat classifications from
-the attribute table (`.dbf` file) of the basemap.
-
 ``` r
-lu_01 <- foreign::read.dbf("Basemap/lu_01_2021.tif.vat.dbf")
+canopy_height <- rast(
+  "o:/Nat_Ecoinformatics/B_Read/Denmark/DK_EcoDes/EcoDes-DK15_v1.1.0/canopy_height/canopy_height.vrt"
+)
 
-C_02 <- unique(as.character(lu_01$C_02))
-C_05 <- unique(as.character(lu_01$C_05))
-C_20 <- unique(as.character(lu_01$C_20))
-
-# Clean C_12 by removing numbers and trimming whitespace
-C_05 <- trimws(gsub("[0-9]", "", C_05))
-C_20 <- trimws(gsub("[0-9]", "", C_20))
-```
-
-## Performing Habitat Matching
-
-We apply the string matching function to find the closest corresponding
-habitat name in the basemap classifications for each expert-identified
-habitat.
-
-``` r
-DF$c_02 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_02)
-DF$c_05b <- sapply(DF$clean_unique_habs, find_closest, candidates = C_05)
-DF$c_20 <- sapply(DF$clean_unique_habs, find_closest, candidates = C_20)
-```
-
-## Reviewing and Exporting the Results
-
-We display the final table for review:
-
-| unique_habs                                                          | clean_unique_habs                                              | c_05                               | c_09                               | c_12                                       | c_02                                  | c_05b                                      | c_20                                       |
-|:---------------------------------------------------------------------|:---------------------------------------------------------------|:-----------------------------------|:-----------------------------------|:-------------------------------------------|:--------------------------------------|:-------------------------------------------|:-------------------------------------------|
-| Avneknippemose (0-3)                                                 | Avneknippemose                                                 | Avneknippemose                     | Avneknippemose                     | Jernbane                                   | Avneknippemose                        | Lav bebyggelse                             | Lav bebyggelse                             |
-| Dyrkede marker (I omdrift) (0-3)                                     | Dyrkede marker (I omdrift)                                     | Frit areal (overdrev)              | Frit areal (overdrev)              | Ikke kortlagt                              | Frit areal (overdrev)                 | Vej, ikke befæstet                         | Bykerne; Bygning                           |
-| Forstæder og villakvarterer (0-3)                                    | Forstæder og villakvarterer                                    | Frit areal (overdrev)              | Frit areal (overdrev)              | Andet bebyggelse                           | Surt overdrev                         | Natur, tør                                 | Natur, tør                                 |
-| Grøftekanter (0-3)                                                   | Grøftekanter                                                   | Golfbane                           | Golfbane                           | Natur, tør                                 | Golfbane                              | Natur, tør                                 | Natur, tør                                 |
-| Højmose, nedbrudt højmose og hængesæk (0-3)                          | Højmose, nedbrudt højmose og hængesæk                          | Nedbrudt højmose                   | Nedbrudt højmose                   | Høj bebyggelse                             | Nedbrudt højmose                      | Høj bebyggelse                             | Høj bebyggelse; Bygning                    |
-| Ikke dyrkede, ikke bebyggede åbne områder, inklusive ruderater (0-3) | Ikke dyrkede, ikke bebyggede åbne områder, inklusive ruderater | Strandvold med flerårig vegetation | Strandvold med flerårig vegetation | Landbrug, intensivt, midlertidige afgrøder | Vejmidte, Lokalvej-Sekundær, Befæstet | Landbrug, intensivt, midlertidige afgrøder | Landbrug, intensivt, midlertidige afgrøder |
-| Kildevæld (0-3)                                                      | Kildevæld                                                      | Kildevæld                          | Kildevæld                          | Skov                                       | Kildevæld                             | Hav                                        | Hav                                        |
-| Klitlavninger (0-3)                                                  | Klitlavninger                                                  | Klitlavning                        | Klitlavning                        | Bygning                                    | Klitlavning                           | Bygning                                    | Bygning                                    |
-| Klitter (0-3)                                                        | Klitter                                                        | Klit                               | Klit                               | Erhverv                                    | Klit                                  | Erhverv                                    | Erhverv                                    |
-| Krat (0-3)                                                           | Krat                                                           | Krat                               | Krat                               | Hav                                        | Krat                                  | Hav                                        | Hav                                        |
-| Kyst-skrænter (0-3)                                                  | Kyst-skrænter                                                  | Skrænt                             | Skrænt                             | Natur, tør                                 | Skrænt                                | Natur, tør                                 | Natur, tør                                 |
-| Landbrugsbebyggelse, nedlagte landbrug mm (0-3)                      | Landbrugsbebyggelse, nedlagte landbrug mm                      | Lav bebyggelse                     | Lav bebyggelse                     | Landbrug, intensivt, permanente afgrøder   | Lav bebyggelse                        | Landbrug, intensivt, permanente afgrøder   | Andet bebyggelse; Bygning                  |
-| Landsbyer (0-3)                                                      | Landsbyer                                                      | Land                               | Land                               | Vandløb                                    | Land                                  | Vandløb                                    | Vandløb                                    |
-| Levende hegn (0-3)                                                   | Levende hegn                                                   | Strandeng                          | Strandeng                          | Jernbane                                   | Overdrev                              | Jernbane                                   | Jernbane                                   |
-| Lysåben skov (0-3)                                                   | Lysåben skov                                                   | Ege-blandskov                      | Ege-blandskov                      | Skov                                       | Ege-blandskov                         | Skov                                       | Skov                                       |
-| Mark kanter og markskel (0-3)                                        | Mark kanter og markskel                                        | Ukultiveret areal                  | Ukultiveret areal                  | Lav bebyggelse                             | Rekreativt område                     | Lav bebyggelse                             | Lav bebyggelse                             |
-| Midtby (centrum af større byer) (0-3)                                | Midtby (centrum af større byer)                                | Skovbevoksede tørvemoser           | Skovbevoksede tørvemoser           | Andet bebyggelse                           | Skovbevoksede tørvemoser              | Natur, tør                                 | Natur, tør                                 |
-| Næringsfattig skov (0-3)                                             | Næringsfattig skov                                             | Vinteregeskov                      | Vinteregeskov                      | Natur, tør                                 | Vinteregeskov                         | Natur, tør                                 | Natur, tør                                 |
-| Næringsfattig våd eng (0-3)                                          | Næringsfattig våd eng                                          | Tidvis våd eng                     | Tidvis våd eng                     | Natur, våd                                 | Tidvis våd eng                        | Natur, våd                                 | Natur, våd                                 |
-| Næringsrig skov (0-3)                                                | Næringsrig skov                                                | Vinteregeskov                      | Vinteregeskov                      | Natur, tør                                 | Vinteregeskov                         | Natur, tør                                 | Natur, tør                                 |
-| Næringsrig våd eng (0-3)                                             | Næringsrig våd eng                                             | Tidvis våd eng                     | Tidvis våd eng                     | Natur, våd                                 | Tidvis våd eng                        | Natur, våd                                 | Natur, våd                                 |
-| Overdrev (0-3)                                                       | Overdrev                                                       | Overdrev                           | Overdrev                           | Bykerne                                    | Overdrev                              | Erhverv                                    | Erhverv                                    |
-| Rigkær (0-3)                                                         | Rigkær                                                         | Rigkær                             | Rigkær                             | Skov                                       | Rigkær                                | Skov                                       | Skov                                       |
-| Skovbevokset tørvmose (0-3)                                          | Skovbevokset tørvmose                                          | Skovbevoksede tørvemoser           | Skovbevoksede tørvemoser           | Skov, våd                                  | Skovbevoksede tørvemoser              | Skov, våd                                  | Skov, våd                                  |
-| Skovkanter (0-3)                                                     | Skovkanter                                                     | Skovklit                           | Skovklit                           | Skov                                       | Skovklit                              | Skov                                       | Skov                                       |
-| Skovlysninger (0-3)                                                  | Skovlysninger                                                  | Skovfyr                            | Skovfyr                            | Bygning                                    | Skovfyr                               | Bygning                                    | Bygning                                    |
-| Skovmose/Sumpskov (0-3)                                              | Skovmose/Sumpskov                                              | Strandsump                         | Strandsump                         | Skov                                       | Strandsump                            | Skov                                       | Skov                                       |
-| Strandeng (0-3)                                                      | Strandeng                                                      | Strandeng                          | Strandeng                          | Jernbane                                   | Strandeng                             | Bygning                                    | Bygning                                    |
-| Strandoverdrev (0-3)                                                 | Strandoverdrev                                                 | Surt overdrev                      | Surt overdrev                      | Erhverv                                    | Surt overdrev                         | Erhverv                                    | Erhverv                                    |
-| Tæt skov (0-3)                                                       | Tæt skov                                                       | Skov                               | Skov                               | Skov                                       | Skov                                  | Skov                                       | Skov                                       |
-| Tør hede (0-3)                                                       | Tør hede                                                       | Tør hede                           | Tør hede                           | Jernbane                                   | Tør hede                              | Erhverv                                    | Erhverv                                    |
-| Vandløbskanter (0-3)                                                 | Vandløbskanter                                                 | Vandloebskant                      | Skydebane                          | Vandløb                                    | Sand / klit                           | Vandløb                                    | Vandløb                                    |
-| Vejkanter og vejskråninger (0-3)                                     | Vejkanter og vejskråninger                                     | Vinteregeskov                      | Vinteregeskov                      | Natur, våd                                 | Vinteregeskov                         | Vej, ikke befæstet                         | Jernbane; Bygning                          |
-| Våd hede (0-3)                                                       | Våd hede                                                       | Våd hede                           | Våd hede                           | Jernbane                                   | Våd hede                              | Vandløb                                    | Vandløb                                    |
-
-Finally, we export the matched data to an Excel file for further
-analysis or verification.
-
-``` r
-openxlsx::write.xlsx(DF, "Comparison_01.xlsx")
-```
-
-# Test aggregated
-
-# Comparison with Lu_01 in basemap
-
-## Loading Basemap Habitat Classifications
-
-To perform the matching, we extract unique habitat classifications from
-the attribute table (`.dbf` file) of the basemap.
-
-``` r
-lu_agg <- foreign::read.dbf("Basemap/lu_agg_2021.tif.vat.dbf")
-
-C_02b <- unique(as.character(lu_agg$C_02))
-
-# Clean C_12 by removing numbers and trimming whitespace
-C_02b <- trimws(gsub("[0-9]", "", C_02b))
-```
-
-## Performing Habitat Matching
-
-We apply the string matching function to find the closest corresponding
-habitat name in the basemap classifications for each expert-identified
-habitat.
-
-``` r
-DF$c_02b <- sapply(DF$clean_unique_habs, find_closest, candidates = C_02b)
-```
-
-## Reviewing and Exporting the Results
-
-We display the final table for review:
-
-| unique_habs                                                          | clean_unique_habs                                              | c_05                               | c_09                               | c_12                                       | c_02                                  | c_05b                                      | c_20                                       | c_02b                                      |
-|:---------------------------------------------------------------------|:---------------------------------------------------------------|:-----------------------------------|:-----------------------------------|:-------------------------------------------|:--------------------------------------|:-------------------------------------------|:-------------------------------------------|:-------------------------------------------|
-| Avneknippemose (0-3)                                                 | Avneknippemose                                                 | Avneknippemose                     | Avneknippemose                     | Jernbane                                   | Avneknippemose                        | Lav bebyggelse                             | Lav bebyggelse                             | Lav bebyggelse                             |
-| Dyrkede marker (I omdrift) (0-3)                                     | Dyrkede marker (I omdrift)                                     | Frit areal (overdrev)              | Frit areal (overdrev)              | Ikke kortlagt                              | Frit areal (overdrev)                 | Vej, ikke befæstet                         | Bykerne; Bygning                           | Bykerne; Bygning                           |
-| Forstæder og villakvarterer (0-3)                                    | Forstæder og villakvarterer                                    | Frit areal (overdrev)              | Frit areal (overdrev)              | Andet bebyggelse                           | Surt overdrev                         | Natur, tør                                 | Natur, tør                                 | Andet bebyggelse                           |
-| Grøftekanter (0-3)                                                   | Grøftekanter                                                   | Golfbane                           | Golfbane                           | Natur, tør                                 | Golfbane                              | Natur, tør                                 | Natur, tør                                 | Bykerne                                    |
-| Højmose, nedbrudt højmose og hængesæk (0-3)                          | Højmose, nedbrudt højmose og hængesæk                          | Nedbrudt højmose                   | Nedbrudt højmose                   | Høj bebyggelse                             | Nedbrudt højmose                      | Høj bebyggelse                             | Høj bebyggelse; Bygning                    | Høj bebyggelse; Bygning                    |
-| Ikke dyrkede, ikke bebyggede åbne områder, inklusive ruderater (0-3) | Ikke dyrkede, ikke bebyggede åbne områder, inklusive ruderater | Strandvold med flerårig vegetation | Strandvold med flerårig vegetation | Landbrug, intensivt, midlertidige afgrøder | Vejmidte, Lokalvej-Sekundær, Befæstet | Landbrug, intensivt, midlertidige afgrøder | Landbrug, intensivt, midlertidige afgrøder | Landbrug, intensivt, midlertidige afgrøder |
-| Kildevæld (0-3)                                                      | Kildevæld                                                      | Kildevæld                          | Kildevæld                          | Skov                                       | Kildevæld                             | Hav                                        | Hav                                        | Bykerne                                    |
-| Klitlavninger (0-3)                                                  | Klitlavninger                                                  | Klitlavning                        | Klitlavning                        | Bygning                                    | Klitlavning                           | Bygning                                    | Bygning                                    | Bygning                                    |
-| Klitter (0-3)                                                        | Klitter                                                        | Klit                               | Klit                               | Erhverv                                    | Klit                                  | Erhverv                                    | Erhverv                                    | Erhverv                                    |
-| Krat (0-3)                                                           | Krat                                                           | Krat                               | Krat                               | Hav                                        | Krat                                  | Hav                                        | Hav                                        | Hav                                        |
-| Kyst-skrænter (0-3)                                                  | Kyst-skrænter                                                  | Skrænt                             | Skrænt                             | Natur, tør                                 | Skrænt                                | Natur, tør                                 | Natur, tør                                 | Bykerne                                    |
-| Landbrugsbebyggelse, nedlagte landbrug mm (0-3)                      | Landbrugsbebyggelse, nedlagte landbrug mm                      | Lav bebyggelse                     | Lav bebyggelse                     | Landbrug, intensivt, permanente afgrøder   | Lav bebyggelse                        | Landbrug, intensivt, permanente afgrøder   | Andet bebyggelse; Bygning                  | Lav bebyggelse; Bygning                    |
-| Landsbyer (0-3)                                                      | Landsbyer                                                      | Land                               | Land                               | Vandløb                                    | Land                                  | Vandløb                                    | Vandløb                                    | Vandløb                                    |
-| Levende hegn (0-3)                                                   | Levende hegn                                                   | Strandeng                          | Strandeng                          | Jernbane                                   | Overdrev                              | Jernbane                                   | Jernbane                                   | Jernbane                                   |
-| Lysåben skov (0-3)                                                   | Lysåben skov                                                   | Ege-blandskov                      | Ege-blandskov                      | Skov                                       | Ege-blandskov                         | Skov                                       | Skov                                       | Skov                                       |
-| Mark kanter og markskel (0-3)                                        | Mark kanter og markskel                                        | Ukultiveret areal                  | Ukultiveret areal                  | Lav bebyggelse                             | Rekreativt område                     | Lav bebyggelse                             | Lav bebyggelse                             | Lav bebyggelse                             |
-| Midtby (centrum af større byer) (0-3)                                | Midtby (centrum af større byer)                                | Skovbevoksede tørvemoser           | Skovbevoksede tørvemoser           | Andet bebyggelse                           | Skovbevoksede tørvemoser              | Natur, tør                                 | Natur, tør                                 | Andet bebyggelse                           |
-| Næringsfattig skov (0-3)                                             | Næringsfattig skov                                             | Vinteregeskov                      | Vinteregeskov                      | Natur, tør                                 | Vinteregeskov                         | Natur, tør                                 | Natur, tør                                 | Natur, tør                                 |
-| Næringsfattig våd eng (0-3)                                          | Næringsfattig våd eng                                          | Tidvis våd eng                     | Tidvis våd eng                     | Natur, våd                                 | Tidvis våd eng                        | Natur, våd                                 | Natur, våd                                 | Natur, våd                                 |
-| Næringsrig skov (0-3)                                                | Næringsrig skov                                                | Vinteregeskov                      | Vinteregeskov                      | Natur, tør                                 | Vinteregeskov                         | Natur, tør                                 | Natur, tør                                 | Erhverv                                    |
-| Næringsrig våd eng (0-3)                                             | Næringsrig våd eng                                             | Tidvis våd eng                     | Tidvis våd eng                     | Natur, våd                                 | Tidvis våd eng                        | Natur, våd                                 | Natur, våd                                 | Natur, våd                                 |
-| Overdrev (0-3)                                                       | Overdrev                                                       | Overdrev                           | Overdrev                           | Bykerne                                    | Overdrev                              | Erhverv                                    | Erhverv                                    | Bykerne                                    |
-| Rigkær (0-3)                                                         | Rigkær                                                         | Rigkær                             | Rigkær                             | Skov                                       | Rigkær                                | Skov                                       | Skov                                       | Skov                                       |
-| Skovbevokset tørvmose (0-3)                                          | Skovbevokset tørvmose                                          | Skovbevoksede tørvemoser           | Skovbevoksede tørvemoser           | Skov, våd                                  | Skovbevoksede tørvemoser              | Skov, våd                                  | Skov, våd                                  | Skov, våd                                  |
-| Skovkanter (0-3)                                                     | Skovkanter                                                     | Skovklit                           | Skovklit                           | Skov                                       | Skovklit                              | Skov                                       | Skov                                       | Skov                                       |
-| Skovlysninger (0-3)                                                  | Skovlysninger                                                  | Skovfyr                            | Skovfyr                            | Bygning                                    | Skovfyr                               | Bygning                                    | Bygning                                    | Bygning                                    |
-| Skovmose/Sumpskov (0-3)                                              | Skovmose/Sumpskov                                              | Strandsump                         | Strandsump                         | Skov                                       | Strandsump                            | Skov                                       | Skov                                       | Skov                                       |
-| Strandeng (0-3)                                                      | Strandeng                                                      | Strandeng                          | Strandeng                          | Jernbane                                   | Strandeng                             | Bygning                                    | Bygning                                    | Bygning                                    |
-| Strandoverdrev (0-3)                                                 | Strandoverdrev                                                 | Surt overdrev                      | Surt overdrev                      | Erhverv                                    | Surt overdrev                         | Erhverv                                    | Erhverv                                    | Erhverv                                    |
-| Tæt skov (0-3)                                                       | Tæt skov                                                       | Skov                               | Skov                               | Skov                                       | Skov                                  | Skov                                       | Skov                                       | Skov                                       |
-| Tør hede (0-3)                                                       | Tør hede                                                       | Tør hede                           | Tør hede                           | Jernbane                                   | Tør hede                              | Erhverv                                    | Erhverv                                    | Erhverv                                    |
-| Vandløbskanter (0-3)                                                 | Vandløbskanter                                                 | Vandloebskant                      | Skydebane                          | Vandløb                                    | Sand / klit                           | Vandløb                                    | Vandløb                                    | Vandløb                                    |
-| Vejkanter og vejskråninger (0-3)                                     | Vejkanter og vejskråninger                                     | Vinteregeskov                      | Vinteregeskov                      | Natur, våd                                 | Vinteregeskov                         | Vej, ikke befæstet                         | Jernbane; Bygning                          | Bykerne; Bygning                           |
-| Våd hede (0-3)                                                       | Våd hede                                                       | Våd hede                           | Våd hede                           | Jernbane                                   | Våd hede                              | Vandløb                                    | Vandløb                                    | Bykerne                                    |
-
-Finally, we export the matched data to an Excel file for further
-analysis or verification.
-
-``` r
-openxlsx::write.xlsx(DF, "Comparison_agg.xlsx")
-```
-
-## Evaluating Matching Accuracy
-
-To assess which column has the highest number of exact matches with
-clean_unique_habs, we calculate the number of direct matches for each
-column:
-
-``` r
-exact_matches_05 <- sum(DF$clean_unique_habs == DF$c_05, na.rm = TRUE)
-exact_matches_09 <- sum(DF$clean_unique_habs == DF$c_09, na.rm = TRUE)
-exact_matches_12 <- sum(DF$clean_unique_habs == DF$c_12, na.rm = TRUE)
-exact_matches_02 <- sum(DF$clean_unique_habs == DF$c_02, na.rm = TRUE)
-exact_matches_02b <- sum(DF$clean_unique_habs == DF$c_02b, na.rm = TRUE)
-exact_matches_05b <- sum(DF$clean_unique_habs == DF$c_05b, na.rm = TRUE)
-exact_matches_20 <- sum(DF$clean_unique_habs == DF$c_20, na.rm = TRUE)
-
-match_summary <- data.frame(
-  Column = c("c_02","c_02b", "c_05", "c_05b", "c_09", "c_12", "c_20"),
-  Exact_Matches = c(exact_matches_02, exact_matches_02b ,exact_matches_05, exact_matches_05b, exact_matches_09, exact_matches_12, exact_matches_20)
+thr_canopy <- app(
+  canopy_height,
+  fun = function(x) cbind(as.integer(x < 200L)),
+  filename = "canopy_height_bellow_2m.tif",  # note: filename kept as in original code
+  overwrite = TRUE,
+  cores = max(1, parallel::detectCores() / 2),
+  wopt = list(
+    names    = c("canopy_height_bellow_2m"),
+    datatype = "INT1U",
+    gdal     = c(
+      "COMPRESS=ZSTD", "TILED=YES",
+      "BLOCKXSIZE=512", "BLOCKYSIZE=512",
+      "NUM_THREADS=ALL_CPUS", "BIGTIFF=IF_SAFER"
+    )
+  )
 )
 ```
 
-## match_summary
+### 7.0.1 Quick visual check
 
-This summary table will help determine which classification scheme
-aligns most closely with the expert-provided habitat,
+<img src="man/figures/README-plot-density-canopy-1.png" width="100%" />
 
-| Column | Exact_Matches |
-|:-------|--------------:|
-| c_02   |             8 |
-| c_02b  |             0 |
-| c_05   |             8 |
-| c_05b  |             0 |
-| c_09   |             8 |
-| c_12   |             0 |
-| c_20   |             0 |
+# 8 5. Forest edge distance and 200 m forest border
+
+We use a forest mask (`Habitats/skovkanter_narrow.tif`) to compute:
+
+- distance to the nearest forest edge for every pixel, and
+- a 200 m band on both sides of the forest edge.
+
+``` r
+# Forest edge / forest mask
+skovkanterv_narrow <- rast("Habitats/skovkanter_narrow.tif")
+
+x <- skovkanterv_narrow
+
+# Sources for distance: opposite classes
+src_nonforest <- ifel(x == 0, 1, NA)  # distance FROM forest cells TO nearest non-forest
+src_forest    <- ifel(x == 1, 1, NA)  # distance FROM non-forest cells TO nearest forest
+
+d_to_nonforest <- distance(
+  src_nonforest,
+  filename = "d_to_nonforest.tif", overwrite = TRUE,
+  wopt = list(gdal = c("COMPRESS=LZW", "TILED=YES", "BIGTIFF=YES"))
+)
+
+d_to_forest <- distance(
+  src_forest,
+  filename = "d_to_forest.tif", overwrite = TRUE,
+  wopt = list(gdal = c("COMPRESS=LZW", "TILED=YES", "BIGTIFF=YES"))
+)
+
+# Distance to the edge = distance to the opposite class
+dist_edge <- ifel(x == 1, d_to_nonforest, d_to_forest)
+writeRaster(
+  dist_edge,
+  "dist_to_edge.tif",
+  overwrite = TRUE,
+  wopt = list(gdal = c("COMPRESS=LZW", "TILED=YES", "BIGTIFF=YES"))
+)
+
+# 200 m band on both sides of the edge
+edge200 <- dist_edge <= 200
+writeRaster(
+  edge200,
+  "forest_border_200m.tif",
+  overwrite = TRUE,
+  wopt = list(
+    datatype = "INT1U",
+    gdal      = c("COMPRESS=LZW", "TILED=YES")
+  )
+)
+```
+
+### 8.0.1 Quick visual check
+
+<img src="man/figures/README-plot-edge-1.png" width="100%" />
+
+# 9 Forest gaps: canopy \< 2 m inside forest holes \> 400 m²
+
+We identify low-canopy patches inside “holes” in forest (clearings)
+larger than 400 m², then rasterize them.
+
+``` r
+# Canopy < 2 m (1/NA)
+canopy_bellow_2 <- rast("canopy_height_bellow_2m.tif")
+
+# Forest raster (assumed 1 = forest, NA or 0 = non-forest)
+forestEdge <- rast("Habitats/skovkanter_narrow.tif")
+
+# Forest polygons, split into individual parts
+forestEdgePoly <- terra::as.polygons(forestEdge) |>
+  terra::disagg()
+
+# Holes inside forest polygons
+ForestHoles <- terra::fillHoles(forestEdgePoly, inverse = TRUE)
+
+# Keep holes > 400 m² (~20 x 20 m)
+ForestHolesOver400sqmt <- ForestHoles[terra::expanse(ForestHoles) > 400, ]
+
+# Rasterize holes onto canopy grid
+ForestHolesOver400sqmtRast <- terra::rasterize(
+  ForestHolesOver400sqmt,
+  canopy_bellow_2,
+  field = 1
+)
+
+# Combine low canopy and holes
+HolesWithLowCanopy <- canopy_bellow_2 + ForestHolesOver400sqmtRast
+
+# Keep only pixels where both are 1 (sum == 2)
+HolesWithLowCanopy <- terra::ifel(HolesWithLowCanopy == 2, 1, NA)
+
+# Convert to polygons and filter by size again
+HolesWithLowCanopy <- terra::as.polygons(HolesWithLowCanopy) |>
+  terra::disagg()
+HolesWithLowCanopy <- HolesWithLowCanopy[terra::expanse(HolesWithLowCanopy) > 400, ]
+
+forest_gaps_canopy_lt2m_400m2 <- terra::rasterize(HolesWithLowCanopy, forestEdge)
+BDRUtils::write_cog(forest_gaps_canopy_lt2m_400m2, "forest_gaps_canopy_lt2m_400m2.tif")
+```
+
+### 9.0.1 Quick visual check
+
+<img src="man/figures/README-plot-gaps-1.png" width="100%" />
+
+# 10 Distance-to-coast masks (200, 400, 800 m)
+
+We create distance-to-coast rasters and then binary masks within 200,
+400, and 800 m of the coast.
+
+``` r
+# Denmark boundary in same CRS as basemap r
+DK <- geodata::gadm("Denmark", level = 0, path = getwd()) |>
+  terra::project(terra::crs(r))
+
+DK_Coast <- terra::rasterize(DK, r, field = NA, background = 1)
+DK_Coast_m <- terra::distance(DK_Coast)
+DK_Coast_m <- terra::mask(DK_Coast_m, DK)
+
+DK_Coast_200m <- terra::ifel(DK_Coast_m <= 200, 1, 0)
+BDRUtils::write_cog(DK_Coast_200m, "DK_Coast_200m.tif")
+
+DK_Coast_400m <- terra::ifel(DK_Coast_m <= 400, 1, 0)
+BDRUtils::write_cog(DK_Coast_400m, "DK_Coast_400m.tif")
+
+DK_Coast_800m <- terra::ifel(DK_Coast_m <= 800, 1, 0)
+BDRUtils::write_cog(DK_Coast_800m, "DK_Coast_800m.tif")
+```
+
+### 10.0.1 Quick visual check
+
+<img src="man/figures/README-plot-coast-1.png" width="100%" />
+
+# 11 Species-specific habitat rasters
+
+We combine the habitat masks and expert opinions to build a final
+weighted habitat raster per species (maximum overlap across habitats).
+
+``` r
+dir.create("SpeciesHabs", showWarnings = FALSE)
+
+SPP <- unique(Expert_opinion$art)
+
+# Clean up Habitat labels in Expert_opinion
+Expert_opinion$Habitat <- trimws(
+  gsub("\\s*\\(0-3\\)$", "", Expert_opinion$Habitat)
+)
+
+for (i in seq_along(SPP)) {
+  spp_name <- SPP[i]
+  message("Starting species ", i, ": ", spp_name, " @ ", round(Sys.time()))
+
+  Species <- Expert_opinion |>
+    dplyr::filter(art == spp_name)
+
+  Final_rast <- NULL
+
+  for (j in seq_len(nrow(Species))) {
+    hab_name <- janitor::make_clean_names(Species$Habitat[j])
+    hab_path <- file.path("Habitats", paste0(hab_name, "_narrow.tif"))
+
+    if (file.exists(hab_path)) {
+      r_hab <- try(terra::rast(hab_path), silent = TRUE)
+
+      if (inherits(r_hab, "SpatRaster")) {
+        r_weighted <- r_hab * Species$Majority[[j]]
+
+        if (is.null(Final_rast)) {
+          Final_rast <- r_weighted
+        } else {
+          # Pixel-wise maximum across habitats
+          Final_rast <- max(c(Final_rast, r_weighted))
+        }
+
+        message("Habitat ", j, " of ", nrow(Species),
+                " ready @ ", round(Sys.time()))
+      } else {
+        message("Skipping habitat ", j, " (not a valid raster)")
+      }
+    } else {
+      message("Missing file for habitat ", j, " - ", hab_path)
+    }
+  }
+
+  if (!is.null(Final_rast)) {
+    message("Masking species raster @ ", round(Sys.time()))
+    Final_rast <- terra::mask(Final_rast, DK)
+
+    out_path <- file.path(
+      "SpeciesHabs",
+      paste0(janitor::make_clean_names(spp_name), "_narrow_.tif")
+    )
+    message("Writing COG: ", out_path, " @ ", round(Sys.time()))
+    SpeciesPoolR::write_cog(Final_rast, out_path)
+  } else {
+    message("No valid rasters found for ", spp_name)
+  }
+}
+```
+
+### 11.0.1 Quick visual check for one species
+
+``` r
+if (exists("SPP") && length(SPP) > 0) {
+  spp_example <- SPP[1]
+  spp_file <- file.path(
+    "SpeciesHabs",
+    paste0(janitor::make_clean_names(spp_example), "_narrow_.tif")
+  )
+
+  if (file.exists(spp_file)) {
+    spp_rast <- rast(spp_file)
+    plot(spp_rast, main = paste("Habitat suitability:", spp_example))
+  }
+}
+```
+
+# 12 9. Example: fusing multiple rasters
+
+As a general pattern, you can fuse a list of rasters by taking the
+pixel-wise maximum using `mosaic()`:
+
+``` r
+# Example: fuse a list of SpatRasters by pixel-wise maximum
+# (replace r1, r2, r3 with real objects)
+raster_list  <- list(r1, r2, r3)
+fused_raster <- do.call(mosaic, c(raster_list, fun = max))
+
+plot(fused_raster, main = "Fused raster (pixel-wise max)")
+```
+
+# 13 Notes
+
+- Many of these steps are computationally heavy. If you just want the
+  code in the README without re-running all computations, set
+  `eval = FALSE` on the corresponding chunks (already done for most big
+  ones).
+
+- Outputs are written as **Cloud Optimized GeoTIFFs** so they can be
+  reused in other scripts, GIS software, and shared via the center’s
+  data-sharing system for both contemporary and temporal habitat
+  analyses.
+
+<!-- -->
