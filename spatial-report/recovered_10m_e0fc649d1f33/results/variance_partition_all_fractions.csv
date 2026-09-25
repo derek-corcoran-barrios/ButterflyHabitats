@@ -1,0 +1,33 @@
+support,fraction,Df,R.square,Adj.R.square,Testable
+point_on_surface,[a] = X1 | X2+X3+X4,1,NA,1.6738914926694992e-4,TRUE
+point_on_surface,[b] = X2 | X1+X3+X4,6,NA,0.029210582654322415,TRUE
+point_on_surface,[c] = X3 | X1+X2+X4,3,NA,0.034338299874084544,TRUE
+point_on_surface,[d] = X4 | X1+X2+X3,1,NA,4.208644683942886e-4,TRUE
+point_on_surface,[e],0,NA,-1.6230592846222525e-4,FALSE
+point_on_surface,[f],0,NA,0.0014294841836183236,FALSE
+point_on_surface,[g],0,NA,-8.712241862984804e-5,FALSE
+point_on_surface,[h],0,NA,1.9006794571452268e-5,FALSE
+point_on_surface,[i],0,NA,-1.2187527620166616e-4,FALSE
+point_on_surface,[j],0,NA,1.1040317752675222e-5,FALSE
+point_on_surface,[k],0,NA,-1.58459639907349e-5,FALSE
+point_on_surface,[l],0,NA,3.7249350762447175e-4,FALSE
+point_on_surface,[m],0,NA,-3.0145917105484088e-5,FALSE
+point_on_surface,[n],0,NA,-3.110768648961759e-5,FALSE
+point_on_surface,[o],0,NA,9.006007390066628e-6,FALSE
+point_on_surface,[p] = Residuals,0,NA,0.9344702362338544,FALSE
+centroid,[a] = X1 | X2+X3+X4,1,NA,1.6739078715166666e-4,TRUE
+centroid,[b] = X2 | X1+X3+X4,6,NA,0.02921053509180005,TRUE
+centroid,[c] = X3 | X1+X2+X4,3,NA,0.03433824870030722,TRUE
+centroid,[d] = X4 | X1+X2+X3,1,NA,4.2081223005030477e-4,TRUE
+centroid,[e],0,NA,-1.6230743686629356e-4,FALSE
+centroid,[f],0,NA,0.001429502916813541,FALSE
+centroid,[g],0,NA,-8.712478875416707e-5,FALSE
+centroid,[h],0,NA,1.9005156686735525e-5,FALSE
+centroid,[i],0,NA,-1.2182771367930112e-4,FALSE
+centroid,[j],0,NA,1.1091491530001996e-5,FALSE
+centroid,[k],0,NA,-1.5844455586666584e-5,FALSE
+centroid,[l],0,NA,3.724955365522753e-4,FALSE
+centroid,[m],0,NA,-3.0164650300701368e-5,FALSE
+centroid,[n],0,NA,-3.110531636529856e-5,FALSE
+centroid,[o],0,NA,9.003978462263085e-6,FALSE
+centroid,[p] = Residuals,0,NA,0.9344702884721984,FALSE

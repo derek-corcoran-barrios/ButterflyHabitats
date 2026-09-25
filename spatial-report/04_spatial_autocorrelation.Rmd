@@ -1,0 +1,687 @@
+---
+title: "Spatial robustness of patch-level FPCA1"
+subtitle: "dbMEM variance partitioning and SPDE mixed-model sensitivity analysis"
+author: "Derek Corcoran and collaborators"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  bookdown::pdf_document2:
+    toc: true
+    number_sections: true
+    fig_caption: true
+    keep_tex: true
+    latex_engine: pdflatex
+bibliography: spatial_references.bib
+link-citations: true
+geometry: margin=1in
+fontsize: 10pt
+params:
+  project_root: "."
+  fpca_results_dir: "Results"
+  patch_dir: "Species_PatchDistances"
+  spatial_output_dir: "Results/spatial_autocorrelation"
+  merge_variant: "20m"
+  analysis_crs: 25832
+  mem_grid_km: 10
+  mem_method: "MIR"
+  mem_nperm: 999
+  mem_nperm_global: 9999
+  mesh_cutoffs_km:
+    value: [10, 20, 40]
+  primary_cutoff_km: 20
+  residual_grid_km:
+    value: [2.5, 5, 10]
+  residual_nsim: 500
+  run_centroid_sensitivity: true
+  seed: 37
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 7.2,
+  fig.height = 5.2,
+  dpi = 300,
+  cache = TRUE,
+  collapse = TRUE,
+  comment = "#>"
+)
+options(stringsAsFactors = FALSE, scipen = 999)
+
+input_path <- knitr::current_input(dir = TRUE)
+analysis_dir <- if (dir.exists(input_path)) input_path else dirname(input_path)
+source(file.path(analysis_dir, "spatial_analysis_helpers.R"))
+assert_spatial_packages()
+
+resolve_path <- function(path, root) {
+  is_absolute <- grepl("^(/|[A-Za-z]:[/\\\\])", path)
+  normalizePath(
+    if (is_absolute) path else file.path(root, path),
+    winslash = "/",
+    mustWork = FALSE
+  )
+}
+
+project_root <- normalizePath(params$project_root, winslash = "/", mustWork = TRUE)
+fpca_results_dir <- resolve_path(params$fpca_results_dir, project_root)
+patch_dir <- resolve_path(params$patch_dir, project_root)
+spatial_output_dir <- resolve_path(params$spatial_output_dir, project_root)
+dir.create(spatial_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+mesh_cutoffs_km <- as.numeric(unlist(params$mesh_cutoffs_km))
+residual_grid_km <- as.numeric(unlist(params$residual_grid_km))
+stopifnot(params$primary_cutoff_km %in% mesh_cutoffs_km)
+set.seed(params$seed)
+```
+
+# Purpose and inferential architecture
+
+This report replaces linear coordinate terms ($x+y+xy$) with two complementary
+representations of spatial dependence. First, Moran eigenvector maps (dbMEMs)
+represent residual spatial structure at multiple scales in the variance
+partition. Second, a continuous Matérn spatial random field is fitted with the
+SPDE approach in `sdmTMB` [@lindgren2011; @anderson_sdmTMB]. The same fixed and
+species-random-effect structure is fitted with and without the spatial field.
+
+The analysis deliberately keeps two geometries separate:
+
+1. **Connectivity geometry:** FPCA1 is derived upstream from ordered,
+   border-to-border distances among habitat polygons.
+2. **Residual geographic structure:** dbMEM and SPDE use representative
+   geographic locations of the final patches, never the edge-distance matrix
+   that generated FPCA1.
+
+This separation avoids using the response-generating edge distances again as
+spatial controls. Edge-to-edge distances remain the ecologically appropriate
+connectivity measure because centroid distances can substantially overstate the
+physical gap between large or elongated patches.
+
+This report assumes that the upstream ordered profiles are the intended ones.
+The current data-generation workflow preselects up to 15 candidate neighbours
+by centroid distance and then calculates and ranks polygon edge distances within
+that candidate set. The resulting values are edge-to-edge distances, but the
+candidate shortcut does not mathematically guarantee that they are the five
+globally nearest polygon edges for large or elongated patches. Before the final
+manuscript, a targeted exact-neighbour audit of the largest and least compact
+patches is therefore advisable.
+
+The selected patch correction is **`r spatial_variant_spec(params$merge_variant)$label`**.
+The report stops if the FPCA identifiers do not match the geometry, lookup, and
+area files for that exact correction.
+
+# Input assembly and validation
+
+```{r read-and-join-data}
+fpca_scores <- read_fpca_patch_scores(fpca_results_dir)
+
+analysis_sf <- assemble_spatial_analysis_data(
+  scores = fpca_scores,
+  patch_dir = patch_dir,
+  merge_variant = params$merge_variant,
+  analysis_crs = params$analysis_crs,
+  strict = TRUE
+)
+
+model_data <- prepare_model_data(analysis_sf)
+
+saveRDS(
+  list(
+    model_data = model_data,
+    parameters = params,
+    generated = Sys.time()
+  ),
+  file.path(spatial_output_dir, "spatial_model_data.rds")
+)
+
+scenario_counts <- model_data |>
+  dplyr::count(.data$species, .data$mapping, .data$quality, name = "n_patches") |>
+  dplyr::arrange(.data$mapping, .data$quality, .data$species)
+
+readr::write_csv(
+  scenario_counts,
+  file.path(spatial_output_dir, "input_patch_counts.csv")
+)
+
+knitr::kable(
+  scenario_counts,
+  caption = "Patch-level observations entering the spatial analyses.",
+  booktabs = TRUE,
+  longtable = TRUE
+)
+```
+
+FPCA signs are mathematically arbitrary. The import function orients each
+scenario so that larger FPCA1 values represent shorter ordered distances and
+therefore greater local structural connectivity. The response and log patch
+area are standardized globally for model fitting; they are not standardized
+within habitat definition, because within-definition standardization would
+erase the mapping and quality contrasts of interest.
+
+## Polygon-support diagnostics
+
+A point on surface is used for the primary spatial representation. It is
+guaranteed to lie in the dissolved final patch, but it remains a one-point
+approximation. The geometric centroid is therefore retained as an explicit
+sensitivity analysis rather than treated as a perfect description of a large
+or complex polygon [@pebesma2018].
+
+```{r support-summary}
+support_summary <- geometry_support_summary(model_data)
+readr::write_csv(
+  support_summary,
+  file.path(spatial_output_dir, "polygon_support_summary.csv")
+)
+knitr::kable(
+  support_summary,
+  digits = 3,
+  caption = "Distribution of polygon size, compactness, and displacement between centroid and point-on-surface representations.",
+  booktabs = TRUE
+)
+```
+
+```{r largest-patches, fig.cap="The nine largest final patches, with point-on-surface (blue) and geometric centroid (red) representations."}
+largest_patches <- analysis_sf |>
+  dplyr::arrange(dplyr::desc(.data$area_km2)) |>
+  dplyr::slice_head(n = 9L)
+
+largest_surface <- suppressWarnings(sf::st_point_on_surface(largest_patches))
+largest_centroid <- suppressWarnings(sf::st_centroid(largest_patches))
+
+ggplot2::ggplot() +
+  ggplot2::geom_sf(data = largest_patches, fill = "grey90", colour = "grey35") +
+  ggplot2::geom_sf(data = largest_surface, colour = "#2166AC", size = 1.8) +
+  ggplot2::geom_sf(data = largest_centroid, colour = "#B2182B", shape = 4, size = 1.8) +
+  ggplot2::facet_wrap(~ species + scenario, scales = "free") +
+  ggplot2::theme_bw(base_size = 8) +
+  ggplot2::theme(axis.text = ggplot2::element_blank(), axis.ticks = ggplot2::element_blank()) +
+  ggplot2::labs(x = NULL, y = NULL)
+```
+
+# dbMEM variance partitioning
+
+Full point-level dbMEM eigendecomposition scales poorly with the square of the
+number of locations and may be infeasible for these patch sets. We therefore
+calculate dbMEMs on occupied **`r params$mem_grid_km` km** cells and map the
+selected cell-level eigenvectors back to the patch observations. This is a
+reduced-rank spatial block: it represents broad-to-intermediate residual
+spatial structure while preserving patch-level ecological predictors.
+
+MEM selection is applied to cell-mean residuals from
+
+$$
+\mathrm{FPCA1} \sim \log(\mathrm{area}) + \mathrm{species} +
+\mathrm{mapping} + \mathrm{quality},
+$$
+
+not to raw FPCA1. The **`r params$mem_method`** criterion is used; MIR adds
+eigenvectors until residual Moran's $I$ is no longer significant
+[@bauman2018; @dray2006]. This prevents the spatial block from being selected
+simply because ecological predictors themselves are geographically structured.
+Because eigenvectors are response-selected, the resulting variance fractions
+are treated as descriptive effect partitioning rather than independent
+hypothesis tests.
+
+```{r select-mems}
+mem_point <- select_mem_block(
+  data = model_data,
+  xy_cols = c("point_X_km", "point_Y_km"),
+  grid_km = params$mem_grid_km,
+  method = params$mem_method,
+  nperm = params$mem_nperm,
+  nperm_global = params$mem_nperm_global
+)
+
+mem_centroid <- select_mem_block(
+  data = model_data,
+  xy_cols = c("centroid_X_km", "centroid_Y_km"),
+  grid_km = params$mem_grid_km,
+  method = params$mem_method,
+  nperm = params$mem_nperm,
+  nperm_global = params$mem_nperm_global
+)
+
+mem_summary <- dplyr::bind_rows(
+  data.frame(
+    support = "point_on_surface",
+    occupied_cells = nrow(mem_point$cells),
+    positive_MEMs = mem_point$all_mem_count,
+    selected_MEMs = mem_point$selected_mem_count
+  ),
+  data.frame(
+    support = "centroid",
+    occupied_cells = nrow(mem_centroid$cells),
+    positive_MEMs = mem_centroid$all_mem_count,
+    selected_MEMs = mem_centroid$selected_mem_count
+  )
+)
+
+readr::write_csv(mem_summary, file.path(spatial_output_dir, "mem_selection_summary.csv"))
+knitr::kable(
+  mem_summary,
+  caption = "dbMEM construction and selection under two spatial-support representations.",
+  booktabs = TRUE
+)
+```
+
+## Four-block partition
+
+The response is partitioned among patch area, species identity, habitat
+definition (mapping and quality), and selected MEMs. With a univariate
+response, `vegan::varpart()` performs partial linear regression and reports
+adjusted $R^2$ fractions [@peresneto2006; @oksanen_vegan].
+
+```{r variance-partition}
+vp_point <- run_variance_partition(model_data, mem_point)
+vp_centroid <- run_variance_partition(model_data, mem_centroid)
+
+partition_comparison <- dplyr::bind_rows(
+  dplyr::mutate(vp_point$table, support = "point_on_surface"),
+  dplyr::mutate(vp_centroid$table, support = "centroid")
+) |>
+  dplyr::select(
+    .data$support, .data$block, .data$marginal_adjusted_r2,
+    .data$unique_adjusted_r2, .data$full_model_adjusted_r2
+  )
+
+readr::write_csv(
+  partition_comparison,
+  file.path(spatial_output_dir, "variance_partition_support_sensitivity.csv")
+)
+
+partition_fractions <- dplyr::bind_rows(
+  varpart_fraction_table(vp_point$varpart, "point_on_surface"),
+  varpart_fraction_table(vp_centroid$varpart, "centroid")
+)
+readr::write_csv(
+  partition_fractions,
+  file.path(spatial_output_dir, "variance_partition_all_fractions.csv")
+)
+
+knitr::kable(
+  partition_comparison,
+  digits = 4,
+  caption = "Adjusted R-squared associations and unique fractions under point-on-surface and centroid spatial support.",
+  booktabs = TRUE
+)
+```
+
+```{r variance-partition-fractions}
+knitr::kable(
+  partition_fractions,
+  digits = 4,
+  caption = "Complete testable and shared fractions from vegan::varpart under both spatial-support representations.",
+  booktabs = TRUE,
+  longtable = TRUE
+)
+```
+
+```{r variance-partition-plot, fig.cap="Variation partitioning with point-on-surface dbMEMs. Fractions can be negative after adjusted-R-squared correction and should not be truncated when reported."}
+graphics::par(mar = c(1, 1, 2, 1))
+plot(
+  vp_point$varpart,
+  Xnames = names(vp_point$blocks),
+  bg = c("#4C78A8", "#F58518", "#54A24B", "#B279A2")[seq_along(vp_point$blocks)]
+)
+```
+
+# SPDE mixed models
+
+The primary model comparison holds the ecological model constant:
+
+$$
+M_0:\quad \mathrm{FPCA1}_i = \beta_0 + \beta_1\log(\mathrm{area}_i) +
+\mathrm{mapping}_i + \mathrm{quality}_i + u_{\mathrm{species}(i)} + \epsilon_i,
+$$
+
+$$
+M_S:\quad \mathrm{FPCA1}_i = \beta_0 + \beta_1\log(\mathrm{area}_i) +
+\mathrm{mapping}_i + \mathrm{quality}_i + u_{\mathrm{species}(i)} +
+\omega(s_i) + \epsilon_i,
+$$
+
+where $\omega(s_i)$ is a continuous Matérn spatial field. `sdmTMB` supports
+both the SPDE field and lme4-style species random intercepts
+[@anderson_sdmTMB].
+
+```{r fit-spde-models}
+spde_point <- fit_spde_suite(
+  data = model_data,
+  xy_cols = c("point_X_km", "point_Y_km"),
+  cutoffs_km = mesh_cutoffs_km
+)
+spde_point_tidy <- tidy_spde_suite(spde_point)
+effect_comparison <- compare_fixed_effects(
+  spde_point_tidy$fixed,
+  primary_cutoff_km = params$primary_cutoff_km
+)
+
+saveRDS(spde_point, file.path(spatial_output_dir, "spde_point_on_surface_models.rds"))
+readr::write_csv(spde_point_tidy$fixed, file.path(spatial_output_dir, "spde_fixed_effects.csv"))
+readr::write_csv(spde_point_tidy$random_parameters, file.path(spatial_output_dir, "spde_random_parameters.csv"))
+readr::write_csv(spde_point_tidy$aic, file.path(spatial_output_dir, "spde_model_aic.csv"))
+readr::write_csv(effect_comparison, file.path(spatial_output_dir, "spde_effect_change.csv"))
+```
+
+## Mesh sensitivity and convergence
+
+A cutoff is the minimum distance between candidate mesh vertices in the
+coordinate units (kilometres here). Smaller cutoffs create finer, slower
+meshes. Conclusions are evaluated across **`r paste(mesh_cutoffs_km, collapse = ", ")` km**
+instead of relying on one arbitrary resolution.
+
+```{r mesh-summary-table}
+knitr::kable(
+  spde_point_tidy$aic,
+  digits = 2,
+  caption = "Non-spatial and SPDE model comparison across mesh cutoffs.",
+  booktabs = TRUE
+)
+```
+
+```{r primary-mesh, fig.cap="Primary SPDE mesh using point-on-surface patch locations."}
+primary_name <- paste0("cutoff_", params$primary_cutoff_km, "km")
+plot(spde_point$meshes[[primary_name]])
+```
+
+```{r model-sanity}
+primary_spatial_model <- spde_point$spatial[[primary_name]]
+sanity_output <- utils::capture.output(sdmTMB::sanity(primary_spatial_model))
+cat(paste(sanity_output, collapse = "\n"))
+```
+
+## Do ecological effects persist?
+
+```{r fixed-effect-table}
+knitr::kable(
+  effect_comparison,
+  digits = 4,
+  caption = paste0(
+    "Fixed effects before and after adding the primary ",
+    params$primary_cutoff_km, " km SPDE field."
+  ),
+  booktabs = TRUE
+)
+```
+
+```{r fixed-effect-plot, fig.cap="Fixed-effect estimates across the non-spatial model and SPDE mesh resolutions. Error bars are 95% confidence intervals."}
+effect_plot_data <- spde_point_tidy$fixed |>
+  dplyr::filter(.data$term != "(Intercept)") |>
+  dplyr::mutate(
+    model_label = dplyr::if_else(
+      .data$model == "nonspatial",
+      "Non-spatial",
+      paste0("SPDE ", .data$cutoff_km, " km")
+    )
+  )
+
+ggplot2::ggplot(
+  effect_plot_data,
+  ggplot2::aes(x = .data$estimate, y = .data$term, colour = .data$model_label)
+) +
+  ggplot2::geom_vline(xintercept = 0, colour = "grey70") +
+  ggplot2::geom_errorbarh(
+    ggplot2::aes(xmin = .data$conf.low, xmax = .data$conf.high),
+    height = 0.15,
+    position = ggplot2::position_dodge(width = 0.55)
+  ) +
+  ggplot2::geom_point(position = ggplot2::position_dodge(width = 0.55), size = 1.8) +
+  ggplot2::theme_bw() +
+  ggplot2::labs(x = "Standardized coefficient", y = NULL, colour = "Model")
+```
+
+```{r spatial-parameter-table}
+knitr::kable(
+  spde_point_tidy$random_parameters,
+  digits = 4,
+  caption = "Estimated random-effect and Matérn parameters across mesh resolutions. Range is in kilometres.",
+  booktabs = TRUE
+)
+```
+
+## Point-on-surface versus centroid SPDE
+
+```{r centroid-spde-sensitivity}
+if (isTRUE(params$run_centroid_sensitivity)) {
+  spde_centroid <- fit_spde_suite(
+    data = model_data,
+    xy_cols = c("centroid_X_km", "centroid_Y_km"),
+    cutoffs_km = params$primary_cutoff_km
+  )
+  centroid_tidy <- tidy_spde_suite(spde_centroid)
+  support_fixed <- dplyr::bind_rows(
+    spde_point_tidy$fixed |>
+      dplyr::filter(
+        .data$model == "SPDE",
+        .data$cutoff_km == params$primary_cutoff_km
+      ) |>
+      dplyr::mutate(support = "point_on_surface"),
+    centroid_tidy$fixed |>
+      dplyr::filter(.data$model == "SPDE") |>
+      dplyr::mutate(support = "centroid")
+  )
+  saveRDS(spde_centroid, file.path(spatial_output_dir, "spde_centroid_model.rds"))
+  readr::write_csv(
+    support_fixed,
+    file.path(spatial_output_dir, "spde_support_sensitivity.csv")
+  )
+  knitr::kable(
+    support_fixed,
+    digits = 4,
+    caption = "Fixed-effect sensitivity to point-on-surface versus centroid spatial support.",
+    booktabs = TRUE
+  )
+}
+```
+
+## Estimated residual spatial field
+
+```{r spatial-field-map, fig.cap="Estimated persistent spatial-field deviations, averaged within 5 km cells for display."}
+field_grid <- spatial_field_at_observations(
+  primary_spatial_model,
+  model_data,
+  grid_km = 5
+)
+
+ggplot2::ggplot(
+  field_grid,
+  ggplot2::aes(x = .data$grid_x, y = .data$grid_y, fill = .data$omega_s)
+) +
+  ggplot2::geom_tile() +
+  ggplot2::coord_equal() +
+  ggplot2::scale_fill_gradient2(
+    low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0
+  ) +
+  ggplot2::theme_bw() +
+  ggplot2::labs(x = "Easting (km)", y = "Northing (km)", fill = expression(omega(s)))
+```
+
+# Residual spatial autocorrelation
+
+DHARMa requires unique coordinates for its distance-based Moran test. Because
+species and habitat definitions can repeat locations, residuals are aggregated
+to spatial cells before testing, as recommended in the DHARMa documentation
+[@hartig_DHARMa]. Results are shown at several cell sizes to avoid depending on
+one arbitrary grouping scale. Simulations use `type = "mle-mvn"`, following
+the current `sdmTMB` residual workflow for random-effect models.
+
+```{r dharma-residuals}
+dharma_nonspatial <- make_dharma_residuals(
+  spde_point$nonspatial,
+  nsim = params$residual_nsim,
+  seed = params$seed
+)
+dharma_spatial <- make_dharma_residuals(
+  primary_spatial_model,
+  nsim = params$residual_nsim,
+  seed = params$seed
+)
+
+residual_tests <- dplyr::bind_rows(lapply(residual_grid_km, function(grid_km) {
+  nonspatial_test <- dharma_spatial_test_from_residuals(
+    residuals = dharma_nonspatial,
+    data = model_data,
+    xy_cols = c("point_X_km", "point_Y_km"),
+    grid_km = grid_km,
+    seed = params$seed,
+    nsim = params$residual_nsim
+  )
+  spatial_test <- dharma_spatial_test_from_residuals(
+    residuals = dharma_spatial,
+    data = model_data,
+    xy_cols = c("point_X_km", "point_Y_km"),
+    grid_km = grid_km,
+    seed = params$seed,
+    nsim = params$residual_nsim
+  )
+  dplyr::bind_rows(
+    dplyr::mutate(nonspatial_test$table, model = "nonspatial"),
+    dplyr::mutate(spatial_test$table, model = "SPDE")
+  )
+})) |>
+  dplyr::select(
+    .data$model, .data$grid_km, .data$n_spatial_cells,
+    .data$moran_observed, .data$moran_expected, .data$p_value, .data$nsim
+  )
+
+readr::write_csv(
+  residual_tests,
+  file.path(spatial_output_dir, "dharma_spatial_autocorrelation.csv")
+)
+knitr::kable(
+  residual_tests,
+  digits = 5,
+  caption = "Distance-based Moran tests of grouped DHARMa residuals before and after adding the SPDE field.",
+  booktabs = TRUE
+)
+```
+
+# Interpretation and manuscript update
+
+The evidential question is not whether a linear $x/y$ trend is small. It is
+whether ecological effect estimates are stable after explicitly modelling
+residual spatial dependence, and whether meaningful residual autocorrelation
+remains.
+
+```{r automatic-interpretation, results='asis'}
+area_effect <- effect_comparison |>
+  dplyr::filter(.data$term == "log_area_z")
+
+primary_range <- spde_point_tidy$random_parameters |>
+  dplyr::filter(
+    .data$cutoff_km == params$primary_cutoff_km,
+    .data$term == "range"
+  ) |>
+  dplyr::slice_head(n = 1L)
+
+primary_sigma <- spde_point_tidy$random_parameters |>
+  dplyr::filter(
+    .data$cutoff_km == params$primary_cutoff_km,
+    .data$term == "sigma_O"
+  ) |>
+  dplyr::slice_head(n = 1L)
+
+cat("The primary point-on-surface SPDE model estimated a Matérn range of ")
+cat(if (nrow(primary_range)) sprintf("%.2f km", primary_range$estimate) else "NA")
+cat(" and a spatial-field standard deviation of ")
+cat(if (nrow(primary_sigma)) sprintf("%.3f", primary_sigma$estimate) else "NA")
+cat(" on the standardized FPCA1 scale. ")
+
+if (nrow(area_effect)) {
+  cat(sprintf(
+    "The standardized log-area coefficient changed from %.3f (95%% CI %.3f to %.3f) without the field to %.3f (95%% CI %.3f to %.3f) with the field. ",
+    area_effect$nonspatial_estimate,
+    area_effect$nonspatial_low,
+    area_effect$nonspatial_high,
+    area_effect$spatial_estimate,
+    area_effect$spatial_low,
+    area_effect$spatial_high
+  ))
+}
+
+primary_residual <- residual_tests |>
+  dplyr::filter(.data$grid_km == residual_grid_km[[which.min(abs(
+    residual_grid_km - 5
+  ))]]) |>
+  dplyr::arrange(.data$model)
+
+if (nrow(primary_residual) == 2L) {
+  non_row <- primary_residual[primary_residual$model == "nonspatial", ]
+  sp_row <- primary_residual[primary_residual$model == "SPDE", ]
+  cat(sprintf(
+    "At the %.1f km residual grouping scale, Moran's I changed from %.4f (p = %.4g) to %.4f (p = %.4g) after adding the field.",
+    non_row$grid_km,
+    non_row$moran_observed,
+    non_row$p_value,
+    sp_row$moran_observed,
+    sp_row$p_value
+  ))
+}
+```
+
+If the area, mapping, and quality coefficients retain their direction and
+similar magnitude across mesh resolutions and spatial-support choices, the
+appropriate conclusion is:
+
+> After accounting for residual spatial dependence with a continuous Matérn
+> field, the estimated effects of patch size and habitat definition were
+> largely unchanged. Residual distance-based Moran tests showed [limited / no]
+> remaining spatial autocorrelation across the tested aggregation scales.
+
+If one or more effects collapse or reverse, they should instead be described as
+partly confounded with geographically structured variation. In either case,
+the earlier statement that FPCA1 was "largely independent of geographic
+location" should be removed. The old $x/y$ model supports only the narrower
+claim that linear broad-scale geographic trends were weak.
+
+## Methods-ready wording
+
+> Edge-to-edge rather than centroid-to-centroid distances were used to derive
+> ordered nearest-neighbour profiles because habitat patches varied in size and
+> geometry, and centroid distances can substantially overestimate the physical
+> separation of neighbouring patches. Residual spatial structure was evaluated
+> independently of those edge distances. For variance partitioning, positive
+> Moran eigenvector maps were constructed from occupied
+> `r params$mem_grid_km`-km cells defined by patch points on surface. A subset
+> was selected from residuals of the non-spatial ecological model using the
+> `r params$mem_method` criterion. We partitioned adjusted $R^2$ in FPCA1 among
+> patch area, species identity, habitat definition, and the selected spatial
+> eigenvectors. Separately, we fitted otherwise identical Gaussian mixed models
+> without and with a continuous Matérn spatial random field using the SPDE
+> implementation in `sdmTMB`, with species as a random intercept. Mesh cutoffs
+> of `r paste(mesh_cutoffs_km, collapse = ", ")` km were compared, and centroid
+> coordinates were used as a spatial-support sensitivity analysis. Residual
+> spatial autocorrelation was assessed with distance-based Moran tests on
+> simulation-based DHARMa residuals aggregated to unique spatial cells.
+
+# Reproducibility record
+
+```{r reproducibility}
+run_manifest <- data.frame(
+  parameter = c(
+    "merge_variant", "analysis_crs", "mem_grid_km", "mem_method",
+    "mesh_cutoffs_km", "primary_cutoff_km", "residual_grid_km",
+    "residual_nsim", "seed"
+  ),
+  value = c(
+    params$merge_variant,
+    params$analysis_crs,
+    params$mem_grid_km,
+    params$mem_method,
+    paste(mesh_cutoffs_km, collapse = ","),
+    params$primary_cutoff_km,
+    paste(residual_grid_km, collapse = ","),
+    params$residual_nsim,
+    params$seed
+  )
+)
+readr::write_csv(run_manifest, file.path(spatial_output_dir, "run_manifest.csv"))
+knitr::kable(run_manifest, caption = "Analysis parameters.", booktabs = TRUE)
+```
+
+```{r session-info}
+sessionInfo()
+```
+
+# References
