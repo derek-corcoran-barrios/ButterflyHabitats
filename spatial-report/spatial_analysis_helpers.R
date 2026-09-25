@@ -741,7 +741,7 @@ make_dharma_residuals <- function(model, nsim = 500, seed = 37) {
   )
 }
 
-dharma_spatial_test_from_residuals <- function(
+group_dharma_spatial_residuals <- function(
     residuals,
     data,
     xy_cols,
@@ -755,6 +755,17 @@ dharma_spatial_test_from_residuals <- function(
     group = cell_factor,
     seed = seed
   )
+  # recalculateResiduals retains $original, duplicate ungrouped fields, and an
+  # aggregation closure capturing the entire simulation matrix. Reconstruct a
+  # self-contained DHARMa object from the grouped observations/simulations so
+  # checkpoints do not serialize those multi-million-row objects repeatedly.
+  grouped <- DHARMa::createDHARMa(
+    simulatedResponse = grouped$simulatedResponse,
+    observedResponse = grouped$observedResponse,
+    fittedPredictedResponse = grouped$fittedPredictedResponse,
+    integerResponse = residuals$integerResponse,
+    seed = seed
+  )
   locations <- data.frame(
     cell_id = cell_factor,
     X = data[[xy_cols[[1L]]]],
@@ -765,32 +776,53 @@ dharma_spatial_test_from_residuals <- function(
     dplyr::summarise(X = mean(.data$X), Y = mean(.data$Y), .groups = "drop") |>
     dplyr::arrange(.data$cell_id)
 
+  list(grouped_residuals = grouped, locations = locations,
+       grid_km = grid_km, nsim = nsim)
+}
+
+moran_test_values <- function(test) {
+  # DHARMa stores these values in statistic, not estimate. Keep the fix
+  # independent of simulation/grouping so a table-extraction fix can resume.
+  stat <- test$statistic
+  if (is.null(stat) ||
+      !all(c("observed", "expected") %in% names(stat))) {
+    stop(
+      "Unexpected DHARMa Moran test structure. statistic names were: ",
+      paste(names(stat), collapse = ", "),
+      call. = FALSE
+    )
+  }
+  observed <- as.numeric(stat[["observed"]])
+  expected <- as.numeric(stat[["expected"]])
+  p_value  <- as.numeric(test$p.value)
+  values <- list(moran_observed = observed, moran_expected = expected,
+                 p_value = p_value)
+  if (!all(vapply(values, function(x) length(x) == 1L && is.finite(x), logical(1)))) {
+    stop("DHARMa Moran test must return three finite scalar values.", call. = FALSE)
+  }
+  values
+}
+
+test_grouped_dharma_spatial_residuals <- function(grouped_result) {
+  grouped <- grouped_result$grouped_residuals
+  locations <- grouped_result$locations
+  if (nrow(locations) < 3L || anyDuplicated(locations[c("X", "Y")])) {
+    stop("Moran test requires at least three unique cell locations.", call. = FALSE)
+  }
   test <- DHARMa::testSpatialAutocorrelation(
-    grouped,
-    x = locations$X,
-    y = locations$Y,
-    plot = FALSE
+    grouped, x = locations$X, y = locations$Y, plot = FALSE
   )
-  estimates <- test$estimate
-  observed <- if ("observed" %in% names(estimates)) {
-    unname(estimates[["observed"]])
-  } else {
-    unname(estimates[[1L]])
-  }
-  expected <- if ("expected" %in% names(estimates)) {
-    unname(estimates[["expected"]])
-  } else {
-    NA_real_
-  }
+  values <- moran_test_values(test)
   result_table <- data.frame(
-    moran_observed = observed,
-    moran_expected = expected,
-    p_value = test$p.value,
+    moran_observed = values$moran_observed,
+    moran_expected = values$moran_expected,
+    p_value = values$p_value,
     n_spatial_cells = nrow(locations),
-    grid_km = grid_km,
-    nsim = nsim,
+    grid_km = as.numeric(grouped_result$grid_km)[1],
+    nsim = as.integer(grouped_result$nsim)[1],
     stringsAsFactors = FALSE
   )
+  
   list(
     table = result_table,
     test = test,
@@ -800,82 +832,11 @@ dharma_spatial_test_from_residuals <- function(
 }
 
 dharma_spatial_test_from_residuals <- function(
-    residuals,
-    data,
-    xy_cols,
-    grid_km = 5,
-    seed = 37,
-    nsim = NA_integer_) {
-  
-  cell_id <- assign_spatial_cells(
-    data,
-    xy_cols = xy_cols,
-    grid_km = grid_km
+    residuals, data, xy_cols, grid_km = 5, seed = 37, nsim = NA_integer_) {
+  grouped <- group_dharma_spatial_residuals(
+    residuals, data, xy_cols, grid_km, seed, nsim
   )
-  
-  cell_factor <- factor(
-    cell_id,
-    levels = sort(unique(cell_id))
-  )
-  
-  grouped <- DHARMa::recalculateResiduals(
-    residuals,
-    group = cell_factor,
-    seed = seed
-  )
-  
-  locations <- data.frame(
-    cell_id = cell_factor,
-    X = data[[xy_cols[[1L]]]],
-    Y = data[[xy_cols[[2L]]]],
-    stringsAsFactors = FALSE
-  ) |>
-    dplyr::group_by(.data$cell_id) |>
-    dplyr::summarise(
-      X = mean(.data$X),
-      Y = mean(.data$Y),
-      .groups = "drop"
-    ) |>
-    dplyr::arrange(.data$cell_id)
-  
-  test <- DHARMa::testSpatialAutocorrelation(
-    grouped,
-    x = locations$X,
-    y = locations$Y,
-    plot = FALSE
-  )
-  
-  stat <- test$statistic
-  
-  if (is.null(stat) ||
-      !all(c("observed", "expected") %in% names(stat))) {
-    stop(
-      "Unexpected DHARMa Moran test structure. statistic names were: ",
-      paste(names(stat), collapse = ", "),
-      call. = FALSE
-    )
-  }
-  
-  observed <- as.numeric(stat[["observed"]])
-  expected <- as.numeric(stat[["expected"]])
-  p_value  <- as.numeric(test$p.value)
-  
-  result_table <- data.frame(
-    moran_observed = observed,
-    moran_expected = expected,
-    p_value = p_value,
-    n_spatial_cells = nrow(locations),
-    grid_km = as.numeric(grid_km)[1],
-    nsim = as.integer(nsim)[1],
-    stringsAsFactors = FALSE
-  )
-  
-  list(
-    table = result_table,
-    test = test,
-    grouped_residuals = grouped,
-    locations = locations
-  )
+  test_grouped_dharma_spatial_residuals(grouped)
 }
 
 spatial_field_at_observations <- function(model, data, grid_km = 5) {
