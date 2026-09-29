@@ -8,3 +8,10 @@ spatial-report/recovered_10m_e0fc649d1f33/results/spde_point_on_surface_models.r
 
 # Large generated mesh figure
 spatial-report/recovered_10m_e0fc649d1f33/patchFPCA_spatial_autocorrelation_10m_recovered_files/figure-latex/primary-mesh-1.pdf
+
+# Nat comparison: generated data, fitted models, checkpoints and render outputs
+Results/nat_spatial_comparison_*/
+spatial-report/05_nat_model_comparison.knit.md
+spatial-report/05_nat_model_comparison.utf8.md
+spatial-report/05_nat_model_comparison_files/
+spatial-report/05_nat_model_comparison_cache/

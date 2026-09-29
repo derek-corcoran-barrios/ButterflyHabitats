@@ -78,7 +78,7 @@ set.seed(params$seed)
 
 # Purpose and inferential architecture
 
-This report replaces linear coordinate terms ($x+y+xy$) with two complementary
+This report replaces coordinate trends and their interaction ($x+y+xy$) with two complementary
 representations of spatial dependence. First, Moran eigenvector maps (dbMEMs)
 represent residual spatial structure at multiple scales in the variance
 partition. Second, a continuous Matérn spatial random field is fitted with the

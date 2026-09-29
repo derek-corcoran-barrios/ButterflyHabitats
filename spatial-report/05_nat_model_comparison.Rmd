@@ -1,0 +1,255 @@
+---
+title: "Patch FPCA1: area transformation and spatial-model sensitivity"
+author: "Derek Corcoran and collaborators"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  bookdown::pdf_document2:
+    toc: true
+    number_sections: true
+    fig_caption: true
+    keep_tex: true
+bibliography: spatial_references.bib
+link-citations: true
+geometry: margin=1in
+fontsize: 10pt
+params:
+  project_root: ".."
+  prepared_data: "Results/spatial_autocorrelation_10m/spatial_model_data.rds"
+  previous_results_dir: ""
+  comparison_output_dir: "Results/nat_spatial_comparison_10m"
+  merge_variant: "10m"
+  analysis_crs: 25832
+  coordinate_crs: 4326
+  mem_grid_km: 10
+  mem_method: "MIR"
+  mem_nperm: 999
+  mem_nperm_global: 9999
+  mesh_cutoffs_km:
+    value: [10, 20, 40]
+  primary_cutoff_km: 20
+  residual_grid_km:
+    value: [2.5, 5, 10]
+  residual_nsim: 500
+  run_centroid_sensitivity: true
+  run_residuals: true
+  seed: 37
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_chunk$set(cache = FALSE, echo = FALSE, message = FALSE,
+                     warning = TRUE, fig.width = 7, fig.height = 5)
+input <- knitr::current_input(dir = TRUE)
+analysis_dir <- if (dir.exists(input)) input else dirname(input)
+source(file.path(analysis_dir, "spatial_analysis_helpers.R"), local = TRUE)
+source(file.path(analysis_dir, "nat_comparison_helpers.R"), local = TRUE)
+assert_spatial_packages(c(required_spatial_packages(), "digest"))
+root <- normalizePath(params$project_root, winslash = "/", mustWork = TRUE)
+resolve <- function(path) {
+  if (!grepl("^(/|[A-Za-z]:[/\\\\])", path)) path <- file.path(root, path)
+  normalizePath(path, winslash = "/", mustWork = FALSE)
+}
+settings <- params
+settings$prepared_data <- resolve(params$prepared_data)
+settings$previous_results_dir <- if (nzchar(params$previous_results_dir)) resolve(params$previous_results_dir) else ""
+settings$comparison_output_dir <- resolve(params$comparison_output_dir)
+settings$mesh_cutoffs_km <- sort(unique(as.numeric(unlist(params$mesh_cutoffs_km))))
+settings$residual_grid_km <- sort(unique(as.numeric(unlist(params$residual_grid_km))))
+stopifnot(params$primary_cutoff_km %in% settings$mesh_cutoffs_km,
+          all(settings$mesh_cutoffs_km > 0), all(settings$residual_grid_km > 0))
+output_dir <- settings$comparison_output_dir
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Purpose and comparison design
+
+Nat's earlier script used $\log(A_{\mathrm{ha}}+1)$ and the coordinate terms
+$x+y+x:y$. The first spatial report used $\log(A)$ and dbMEM/SPDE. This report
+separates those two changes using exactly the same saved patch observations,
+response values, and factor levels. The original input RDS is never modified.
+
+The labels `log` and `log1p_ha` mean standardized $\log(A)$ and standardized
+$\log(A_{\mathrm{ha}}+1)$ respectively. Ordinary logarithms in hectares and
+square metres differ by a constant and give equivalent models with an
+intercept. The added one-hectare constant changes the functional relationship.
+Slope comparisons with and without spatial adjustment are made *within* each
+transformation. Coefficients across transformations describe different predictors.
+
+Coordinate-trend models use longitude and latitude reconstructed from the saved
+representative points (EPSG `r params$coordinate_crs`), with both main effects and
+their interaction. Coordinates are centered/scaled for numerical stability;
+with all three terms and an intercept this preserves the fitted trend surface.
+MEM and SPDE distances continue to use projected kilometres.
+
+These are Nat-style specifications on the **current
+`r params$merge_variant` dataset**, not an exact reproduction of the historical
+analysis. Nat's upstream `mean_FPCA1` exports, original coordinates, patch
+correction, and included rows still need reconciliation. Her manually entered
+plotting values are not treated as fresh model results.
+
+```{r load-prepared-data, cache=FALSE}
+prepared <- if (exists(".nat_prepared", inherits = FALSE)) .nat_prepared else {
+  nat_read_prepared(settings$prepared_data, params$merge_variant, params$analysis_crs)
+}
+model_data <- prepared$data
+input_key <- prepared$input_key
+counts <- dplyr::count(model_data, species, mapping, quality, name = "n_patches")
+readr::write_csv(counts, file.path(output_dir, "nat_input_counts.csv"))
+knitr::kable(data.frame(observations = nrow(model_data),
+                        species_scenarios = nrow(counts),
+                        correction = params$merge_variant), booktabs = TRUE)
+```
+
+# Area and spatial representation in variance partitioning
+
+For each area transformation, variation is partitioned among area, species,
+habitat definition (mapping + quality), and either the coordinate trend or
+selected positive dbMEM variables [@oksanen_vegan; @peresneto2006]. Both points
+on surface and centroids are considered. MEMs are selected again from ecological
+model residuals for **each** transformation and support [@bauman2018; @dray2006].
+The selected fractions are descriptive; selection does not provide independent
+confirmation of the same response. Aggregation into `r params$mem_grid_km` km
+cells limits the spatial scales represented. Negative adjusted fractions are
+retained rather than truncated.
+
+```{r nat-rda-comparison, cache=FALSE}
+rda_comparison <- nat_rda_comparison(model_data, input_key, output_dir, settings)
+knitr::kable(rda_comparison$mem, booktabs = TRUE,
+             caption = "MEM construction and selection for each area transformation and point support.")
+```
+
+```{r nat-rda-table, cache=FALSE}
+display_rda <- rda_comparison$table
+display_rda$support <- ifelse(display_rda$support == "point_on_surface", "Surface", "Centroid")
+display_rda$spatial_representation <- ifelse(display_rda$spatial_representation == "coordinate_trend", "Trend", "dbMEM")
+display_rda <- display_rda[, c("transformation", "support", "spatial_representation", "block",
+                               "unique_adjusted_r2", "full_model_adjusted_r2")]
+names(display_rda) <- c("Area", "Support", "Spatial block", "Component", "Unique R2", "Full R2")
+knitr::kable(display_rda, digits = 5, booktabs = TRUE, longtable = TRUE,
+             caption = "Unique and full adjusted R-squared fractions (proportions, not percentages).")
+```
+
+```{r nat-rda-figure, cache=FALSE, fig.cap="Unique adjusted variance fractions under each area transformation and spatial representation."}
+ggplot2::ggplot(rda_comparison$table,
+  ggplot2::aes(x = block, y = 100 * unique_adjusted_r2,
+               colour = transformation, shape = spatial_representation)) +
+  ggplot2::geom_point(position = ggplot2::position_dodge(width = 0.5), size = 2) +
+  ggplot2::facet_wrap(~ support) + ggplot2::theme_bw() +
+  ggplot2::labs(x = NULL, y = "Unique adjusted variance (%)", colour = "Area", shape = "Spatial block")
+```
+
+# Mixed-model comparison
+
+Each transformation is fitted with a species random intercept and common
+mapping/quality effects: (i) no geographic terms, (ii) the coordinate trend,
+and (iii) an SPDE Matérn field [@anderson_sdmTMB; @lindgren2011]. Species-specific
+slopes or spatial fields are not fitted. Models pool all species/scenarios and
+give each included observation equal likelihood weight; they are not an
+equal-weight analysis of species/scenario means.
+
+Point-on-surface mesh cutoffs are `r paste(settings$mesh_cutoffs_km, collapse=', ')`
+km. The primary cutoff is `r params$primary_cutoff_km` km. If enabled, the
+centroid comparison uses that primary cutoff. Mesh cutoffs describe numerical
+resolution; the spatial correlation range is estimated from the data.
+
+Previously saved `log` models are imported only after checking their formula,
+response, predictor values, row identifiers/order, package version and spatial
+support. New area transformations require new fits. Each completed model has
+its own RDS checkpoint. A later diagnostic fix does not invalidate these fits.
+
+```{r nat-mixed-models, cache=FALSE}
+fits <- nat_fit_summary(model_data, input_key, output_dir, settings)
+display_aic <- fits$aic
+display_aic$support <- ifelse(display_aic$support == "point_on_surface", "Surface", "Centroid")
+display_aic$model[display_aic$model == "coordinate_trend"] <- "Trend"
+display_aic$model[display_aic$model == "nonspatial"] <- "Baseline"
+display_aic <- display_aic[, c("transformation", "support", "model", "AIC", "delta_AIC", "convergence", "pdHess")]
+names(display_aic) <- c("Area", "Support", "Model", "AIC", "Delta AIC", "Conv.", "PD Hess.")
+knitr::kable(display_aic, digits = 2, booktabs = TRUE, longtable = TRUE,
+             caption = "Model comparisons and convergence flags. Inspect each saved sanity log before interpreting a problematic fit.")
+```
+
+```{r nat-effect-comparison, cache=FALSE}
+effect_changes <- dplyr::bind_rows(lapply(c("log", "log1p_ha"), function(area) {
+  rows <- fits$fixed[fits$fixed$transformation == area & fits$fixed$support == "point_on_surface", ]
+  rows$model[startsWith(rows$model, "SPDE_")] <- "SPDE"
+  result <- compare_fixed_effects(rows, params$primary_cutoff_km)
+  result$transformation <- area
+  result
+}))
+readr::write_csv(effect_changes, file.path(output_dir, "nat_effect_change.csv"))
+display_effects <- effect_changes[, c("transformation", "term", "nonspatial_estimate",
+                                      "spatial_estimate", "absolute_change", "same_sign")]
+names(display_effects) <- c("Area", "Term", "No field", "With field", "Change", "Same sign")
+knitr::kable(display_effects, digits = 4, booktabs = TRUE, longtable = TRUE,
+             caption = "Fixed effects before and after the primary spatial field, within each area transformation.")
+```
+
+```{r nat-effect-figure, cache=FALSE, fig.cap="Coefficient estimates and 95% confidence intervals. Compare spatial adjustments within an area transformation."}
+effect_data <- fits$fixed[fits$fixed$term != "(Intercept)" &
+  fits$fixed$support == "point_on_surface" &
+  fits$fixed$model %in% c("nonspatial", "coordinate_trend", paste0("SPDE_", params$primary_cutoff_km)), ]
+ggplot2::ggplot(effect_data, ggplot2::aes(x = term, y = estimate, colour = model)) +
+  ggplot2::geom_hline(yintercept = 0, colour = "grey70") +
+  ggplot2::geom_pointrange(ggplot2::aes(ymin = conf.low, ymax = conf.high),
+                          position = ggplot2::position_dodge(width = 0.6)) +
+  ggplot2::facet_wrap(~ transformation) + ggplot2::coord_flip() +
+  ggplot2::theme_bw() + ggplot2::labs(x = NULL, y = "Coefficient (standardized response)")
+```
+
+```{r nat-support-sensitivity, cache=FALSE}
+support_effects <- fits$fixed[fits$fixed$model == paste0("SPDE_", params$primary_cutoff_km), ]
+readr::write_csv(support_effects, file.path(output_dir, "nat_support_sensitivity.csv"))
+display_support <- support_effects[, c("transformation", "support", "term", "estimate", "conf.low", "conf.high")]
+display_support$support <- ifelse(display_support$support == "point_on_surface", "Surface", "Centroid")
+names(display_support) <- c("Area", "Support", "Term", "Estimate", "Lower", "Upper")
+knitr::kable(display_support, digits = 4, booktabs = TRUE, longtable = TRUE,
+             caption = "Primary spatial-model coefficients under alternative point supports.")
+```
+
+# Residual spatial diagnostics
+
+For each transformation, the nonspatial and primary point-on-surface SPDE
+models are checked using `r params$residual_nsim` simulation draws and DHARMa
+residuals [@hartig_DHARMa]. Grouping scales are
+`r paste(settings$residual_grid_km, collapse=', ')` km. Grouped simulations are
+saved **before** Moran testing, so a test-extraction failure does not require
+repeating successful simulations. Raw observation-level simulation matrices
+are temporary; grouped checkpoint files are much smaller.
+
+```{r nat-residual-diagnostics, cache=FALSE}
+if (isTRUE(params$run_residuals)) {
+  residual_tests <- nat_residual_comparison(fits$models, model_data, input_key, output_dir, settings)
+  residual_display <- residual_tests[, c("transformation", "model", "grid_km", "n_spatial_cells",
+                                         "moran_observed", "moran_expected", "p_value")]
+  residual_display$model[residual_display$model == "nonspatial"] <- "Baseline"
+  names(residual_display) <- c("Area", "Model", "Grid km", "Cells", "I", "Expected I", "p")
+  knitr::kable(residual_display, digits = 5, booktabs = TRUE, longtable = TRUE,
+               caption = "Residual Moran tests at the tested aggregation scales.")
+} else {
+  cat("Residual diagnostics were explicitly disabled for this run. No conclusion about remaining autocorrelation is available.")
+}
+```
+
+# Interpretation and provenance
+
+Area transformation and spatial specification are assessed separately. A small
+fraction of variance explained by selected MEMs does not establish geographic
+independence. Likewise, a nonsignificant grouped Moran test only addresses the
+tested support and scale. Check effect magnitudes, confidence intervals, model
+convergence and spatial-support sensitivity together.
+
+If ecological coefficients are stable, describe that stability conditional on
+these model specifications. If the area association differs between `log` and
+`log1p_ha`, report functional-form sensitivity; do not attribute that difference
+solely to spatial adjustment. Original and new FPCA exports must be reconciled
+before making a numerical historical comparison.
+
+```{r nat-provenance, cache=FALSE}
+manifest <- data.frame(parameter = c("prepared_generated", "input_key", names(settings)),
+  value = c(paste(prepared$generated, collapse = ","), input_key,
+             vapply(settings, function(x) paste(unlist(x), collapse = ","), character(1))))
+readr::write_csv(manifest, file.path(output_dir, "nat_run_manifest.csv"))
+sessionInfo()
+```
+
+# References
