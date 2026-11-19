@@ -10,6 +10,13 @@ in the descriptions, (b) basemap and EcoDes citations and versions, and (c)
 the reviewers and decision criteria that produced the approved narrow/broad
 class lists. Do not claim the LLM rated species suitability.
 
+**Where to insert manually:** In the main manuscript, replace the literal
+`Text?.` below “Habitat mapping on the landscape of Denmark.” In Supplementary
+Methods, add the two detailed subsections below under the existing “Habitat
+definitions” heading, before the sentence “FPCA analysis was repeated across
+the six habitat definitions combining:”. Keep the existing broad/narrow and
+quality-threshold list, adjusting repeated phrasing if necessary.
+
 ## Main manuscript: “Habitat mapping on the landscape of Denmark”
 
 The 34 conceptual habitat categories used in the expert survey were linked
